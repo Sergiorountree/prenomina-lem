@@ -1033,7 +1033,6 @@ function LoginScreen({ onLogin }) {
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
   const [loading, setLoading] = useState(false);
-  const [showDemo, setShowDemo] = useState(false);
 
   // Traduce los códigos de error de Firebase a mensajes claros en español.
   function mensajeError(err) {
@@ -1140,34 +1139,6 @@ function LoginScreen({ onLogin }) {
             <button onClick={recuperar} className="w-full text-center text-xs text-gray-500 hover:text-gray-800 mt-1" style={{ background: 'none', border: 'none' }}>
               ¿Olvidaste tu contraseña?
             </button>
-          </div>
-
-          {/* Cuentas de prueba */}
-          <div className="mt-5 pt-4" style={{ borderTop: '1px solid var(--border)' }}>
-            <button onClick={() => setShowDemo(!showDemo)}
-              className="w-full text-center text-xs text-gray-500 hover:text-gray-800 flex items-center justify-center gap-1.5">
-              <Icon name={showDemo ? 'chevron' : 'chevronR'} size={12} />
-              {showDemo ? 'Ocultar correos del sistema' : 'Ver correos del sistema'}
-            </button>
-            {showDemo && (
-              <div className="mt-3 space-y-1 fade-in">
-                <div className="text-[11px] text-gray-400 mb-2 text-center">Toca un correo para autocompletarlo. La contraseña es la que definiste en Firebase.</div>
-                {SEED.usuarios.map(u => {
-                  const role = ROLES[u.rol];
-                  return (
-                    <button key={u.id}
-                      onClick={() => { setEmail(u.email); setPassword(''); setError(''); setInfo(''); }}
-                      className="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-gray-50 flex items-center gap-2.5">
-                      <span className="brand-dot" style={{ background: role.color }} />
-                      <span className="flex-1 min-w-0">
-                        <span className="text-[12px] font-mono text-gray-700 truncate block">{u.email}</span>
-                      </span>
-                      <span className="text-[10px] uppercase tracking-wider font-medium" style={{ color: role.color }}>{role.label}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
           </div>
         </div>
         <div className="text-center mt-5 text-xs text-gray-400">
