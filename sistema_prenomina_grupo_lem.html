@@ -319,9 +319,10 @@ const SEED = {
     'Otro',
   ],
   usuarios: [
-    { id: 'u_admin', email: 'director@grupolem.mx',     password: 'demo', rol: 'admin',     nombre: 'Eduardo Mendoza',  puestoLabel: 'Director General' },
-    { id: 'u_rh',    email: 'rh@grupolem.mx',           password: 'demo', rol: 'rh',        nombre: 'María Salazar',    puestoLabel: 'Gerente de RH' },
-    { id: 'u_cont',  email: 'contabilidad@grupolem.mx', password: 'demo', rol: 'contabilidad', nombre: 'Ricardo Vera',  puestoLabel: 'Contabilidad' },
+    { id: 'u_admin',  email: 'sergio@grupolem.com',   rol: 'admin',        nombre: 'Sergio Rountree', puestoLabel: 'Director General' },
+    { id: 'u_admin2', email: 'oscar@grupolem.com',    rol: 'admin',        nombre: 'Oscar',           puestoLabel: 'Director General' },
+    { id: 'u_rh',     email: 'banaya@grupolem.com',   rol: 'rh',           nombre: 'B. Anaya',        puestoLabel: 'Gerente de RH' },
+    { id: 'u_cont',   email: 'asalazar@grupolem.com', rol: 'contabilidad', nombre: 'A. Salazar',      puestoLabel: 'Contabilidad' },
   ],
 };
 
@@ -1109,7 +1110,7 @@ function LoginScreen({ onLogin }) {
               <label className="text-[11px] uppercase tracking-wider text-gray-500 font-medium mb-1 block">Correo</label>
               <input
                 type="email" value={email} onChange={e => setEmail(e.target.value)} onKeyDown={onKey}
-                placeholder="correo@grupolem.mx" autoComplete="username"
+                placeholder="correo@grupolem.com" autoComplete="username"
                 className="w-full px-3 py-2.5 rounded-lg border text-sm bg-white"
                 style={{ borderColor: error ? '#F2B8B3' : 'var(--border-strong)' }}
               />
@@ -6088,7 +6089,7 @@ function UsuarioModal({ mode, usuario, colaboradores, onClose, onSave }) {
           </div>
           <div>
             <label className="text-[11px] uppercase tracking-wider text-gray-500 font-medium mb-1 block">Correo (usuario para entrar)</label>
-            <input value={email} onChange={e => setEmail(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border text-sm" style={{ borderColor: 'var(--border-strong)' }} placeholder="correo@grupolem.mx" />
+            <input value={email} onChange={e => setEmail(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border text-sm" style={{ borderColor: 'var(--border-strong)' }} placeholder="correo@grupolem.com" />
           </div>
           <div>
             <label className="text-[11px] uppercase tracking-wider text-gray-500 font-medium mb-1 block">Contraseña</label>
