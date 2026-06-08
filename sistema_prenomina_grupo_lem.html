@@ -12,6 +12,26 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<!-- Firebase Authentication (Fase 1) — SDK compat para entorno sin módulos -->
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+<script>
+  /* Configuración del proyecto Firebase "prenomina-lem".
+     IMPORTANTE: estas llaves NO son secretas. Pueden vivir en el HTML y en GitHub.
+     La seguridad real la dan las Security Rules en el servidor (Fase 5). */
+  var firebaseConfig = {
+    apiKey: "AIzaSyAFR-7LbrtSvnZZsx6E6iL35RyxIDi0OCo",
+    authDomain: "prenomina-lem.firebaseapp.com",
+    projectId: "prenomina-lem",
+    storageBucket: "prenomina-lem.firebasestorage.app",
+    messagingSenderId: "551027718914",
+    appId: "1:551027718914:web:0a08b467a44664f6c2601b",
+    measurementId: "G-EZT0HRC6JH"
+  };
+  try {
+    if (typeof firebase !== 'undefined') firebase.initializeApp(firebaseConfig);
+  } catch (e) { console.error('No se pudo inicializar Firebase:', e); }
+</script>
 <style>
   :root {
     --font-sans: 'Inter Tight', -apple-system, BlinkMacSystemFont, sans-serif;
@@ -1010,14 +1030,61 @@ function LoginScreen({ onLogin }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [info, setInfo] = useState('');
+  const [loading, setLoading] = useState(false);
   const [showDemo, setShowDemo] = useState(false);
 
-  function submit() {
-    setError('');
-    const u = getUsuarios(state).find(x => x.email.toLowerCase() === email.trim().toLowerCase());
-    if (!u) { setError('No existe una cuenta con ese correo.'); return; }
-    if (u.password !== password) { setError('Contraseña incorrecta.'); return; }
-    onLogin(u);
+  // Traduce los códigos de error de Firebase a mensajes claros en español.
+  function mensajeError(err) {
+    const c = (err && err.code) || '';
+    if (c === 'auth/invalid-email') return 'El correo no tiene un formato válido.';
+    if (c === 'auth/user-disabled') return 'Esta cuenta está deshabilitada. Contacta al administrador.';
+    if (c === 'auth/too-many-requests') return 'Demasiados intentos fallidos. Espera unos minutos e inténtalo de nuevo.';
+    if (c === 'auth/network-request-failed') return 'Sin conexión a internet. Revisa tu red.';
+    if (c === 'auth/invalid-credential' || c === 'auth/wrong-password' || c === 'auth/user-not-found')
+      return 'Correo o contraseña incorrectos.';
+    if (c === 'auth/configuration-not-found' || c === 'auth/operation-not-allowed')
+      return 'El acceso por correo aún no está habilitado en Firebase (Authentication → Sign-in method).';
+    return 'No se pudo iniciar sesión. Inténtalo de nuevo.';
+  }
+
+  async function submit() {
+    setError(''); setInfo('');
+    const correo = email.trim().toLowerCase();
+    if (!correo || !password) { setError('Escribe tu correo y contraseña.'); return; }
+    if (typeof firebase === 'undefined' || !firebase.auth) {
+      setError('No se pudo cargar Firebase. Revisa tu conexión a internet.'); return;
+    }
+    setLoading(true);
+    try {
+      await firebase.auth().signInWithEmailAndPassword(correo, password);
+      // Autenticación correcta en Firebase: ahora buscamos el perfil (rol, nombre) en el sistema.
+      const u = getUsuarios(state).find(x => x.email.toLowerCase() === correo);
+      if (!u) {
+        await firebase.auth().signOut();
+        setError('Tu cuenta es válida pero no tiene un perfil asignado en el sistema. Avisa al administrador.');
+        return;
+      }
+      onLogin(u);
+    } catch (err) {
+      setError(mensajeError(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Envía un correo de restablecimiento de contraseña (requiere correo real).
+  async function recuperar() {
+    setError(''); setInfo('');
+    const correo = email.trim().toLowerCase();
+    if (!correo) { setError('Escribe tu correo arriba y vuelve a tocar "¿Olvidaste tu contraseña?".'); return; }
+    if (typeof firebase === 'undefined' || !firebase.auth) { setError('No se pudo cargar Firebase.'); return; }
+    try {
+      await firebase.auth().sendPasswordResetEmail(correo);
+      setInfo('Te enviamos un correo para restablecer tu contraseña. Revisa tu bandeja (y spam).');
+    } catch (err) {
+      setError(mensajeError(err));
+    }
   }
 
   function onKey(e) { if (e.key === 'Enter') submit(); }
@@ -1061,8 +1128,16 @@ function LoginScreen({ onLogin }) {
                 <Icon name="alert" size={12} /> {error}
               </div>
             )}
-            <button onClick={submit} className="btn btn-primary w-full" style={{ padding: '10px 14px', fontSize: 14 }}>
-              Entrar
+            {info && (
+              <div className="text-[12px]" style={{ color: '#0E5A42' }}>
+                {info}
+              </div>
+            )}
+            <button onClick={submit} disabled={loading} className="btn btn-primary w-full" style={{ padding: '10px 14px', fontSize: 14, opacity: loading ? 0.65 : 1, cursor: loading ? 'default' : 'pointer' }}>
+              {loading ? 'Entrando…' : 'Entrar'}
+            </button>
+            <button onClick={recuperar} className="w-full text-center text-xs text-gray-500 hover:text-gray-800 mt-1" style={{ background: 'none', border: 'none' }}>
+              ¿Olvidaste tu contraseña?
             </button>
           </div>
 
@@ -1071,16 +1146,16 @@ function LoginScreen({ onLogin }) {
             <button onClick={() => setShowDemo(!showDemo)}
               className="w-full text-center text-xs text-gray-500 hover:text-gray-800 flex items-center justify-center gap-1.5">
               <Icon name={showDemo ? 'chevron' : 'chevronR'} size={12} />
-              {showDemo ? 'Ocultar cuentas de prueba' : 'Ver cuentas de prueba'}
+              {showDemo ? 'Ocultar correos del sistema' : 'Ver correos del sistema'}
             </button>
             {showDemo && (
               <div className="mt-3 space-y-1 fade-in">
-                <div className="text-[11px] text-gray-400 mb-2 text-center">Contraseña para todas: <span className="font-mono">demo</span></div>
+                <div className="text-[11px] text-gray-400 mb-2 text-center">Toca un correo para autocompletarlo. La contraseña es la que definiste en Firebase.</div>
                 {SEED.usuarios.map(u => {
                   const role = ROLES[u.rol];
                   return (
                     <button key={u.id}
-                      onClick={() => { setEmail(u.email); setPassword('demo'); setError(''); }}
+                      onClick={() => { setEmail(u.email); setPassword(''); setError(''); setInfo(''); }}
                       className="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-gray-50 flex items-center gap-2.5">
                       <span className="brand-dot" style={{ background: role.color }} />
                       <span className="flex-1 min-w-0">
