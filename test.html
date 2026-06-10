@@ -645,8 +645,37 @@ function esperarAuthFirebase(timeoutMs) {
     setTimeout(function(){ if(!done){ done=true; try{unsub();}catch(e){} resolve(firebase.auth().currentUser); } }, timeoutMs);
   });
 }
+// ---- Sync genérico para colecciones tipo MAPA (objeto keyed: prenominas, horarios) ----
+var _colMapSync = {};   // col -> { docId -> json }
+async function fsCargarMap(col) {
+  if (!db) return {};
+  try {
+    var snap = await db.collection(col).get();
+    var obj = {}; _colMapSync[col] = {};
+    snap.docs.forEach(function(d){ obj[d.id] = d.data(); _colMapSync[col][d.id] = JSON.stringify(d.data()); });
+    return obj;
+  } catch (e) { console.error('Cargar ' + col + ':', e); return {}; }
+}
+function fsGuardarMap(col, datos) {
+  if (!db || !_fsInicializado) return;
+  var sync = _colMapSync[col] || (_colMapSync[col] = {});
+  var cambios = [];
+  Object.keys(datos || {}).forEach(function(k){
+    var json = JSON.stringify(datos[k]);
+    if (sync[k] !== json) { cambios.push({ id: k, data: datos[k] }); sync[k] = json; }
+  });
+  if (!cambios.length) return;
+  (async function(){
+    for (var i = 0; i < cambios.length; i += 200) {
+      var lote = cambios.slice(i, i + 200);
+      var batch = db.batch();
+      lote.forEach(function(x){ batch.set(db.collection(col).doc(String(x.id)), x.data, { merge: true }); });
+      try { await batch.commit(); } catch (e) { console.error('Guardar ' + col + ':', e); }
+    }
+  })();
+}
 if (typeof window !== 'undefined') {
-  window.lemFS = { get db(){ return db; }, fsSeedMaestros, fsCargarMaestros, fsImportarColaboradores, fsCargarColaboradores, esperarAuthFirebase };
+  window.lemFS = { get db(){ return db; }, fsSeedMaestros, fsCargarMaestros, fsImportarColaboradores, fsCargarColaboradores, esperarAuthFirebase, fsCargarMap, fsGuardarMap };
 }
 
 function aplicarMigraciones(state) {
@@ -6626,11 +6655,13 @@ function App() {
           ).map(s => s.id);
         }
         const colabs = await fsCargarColaboradores(user.rol, email, verSueldos, misSucIds);
+        const pre = await fsCargarMap('prenominas');
+        const hor = await fsCargarMap('horarios');
         if (cancelado) return;
         _colabSync = {};
         colabs.forEach(c => _marcarSyncColab(c, verSueldos));
         _fsInicializado = true;
-        setState(prev => ({ ...prev, colaboradores: colabs }));
+        setState(prev => ({ ...prev, colaboradores: colabs, prenominas: pre, horarios: hor }));
       } catch (e) { console.error('Cargar colaboradores Firestore:', e); }
     })();
     return () => { cancelado = true; };
@@ -6668,6 +6699,13 @@ function App() {
       }
     })();
   }, [state.colaboradores, user]);
+
+  // ===== Fase 3: guardar pre-nóminas y horarios en Firestore (diff) =====
+  useEffect(() => {
+    if (!user || !db || !_fsInicializado) return;
+    fsGuardarMap('prenominas', state.prenominas);
+    fsGuardarMap('horarios', state.horarios);
+  }, [state.prenominas, state.horarios, user]);
 
   function login(u) { setUser(u); setView('dashboard'); show(`Bienvenido, ${u.nombre.split(' ')[0]}.`); }
   function logout() { setUser(null); }
