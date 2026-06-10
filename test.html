@@ -2543,7 +2543,7 @@ function ImportarColaboradoresModal({ onClose }) {
     setPaso('revisar');
   }
 
-  function confirmarImport() {
+  async function confirmarImport() {
     const base = state.colaboradores.length;
     const nuevos = analisis.validas.map((reg, i) => ({
       id: 'c_' + Date.now().toString(36) + '_' + i,
@@ -2559,10 +2559,19 @@ function ImportarColaboradoresModal({ onClose }) {
       statusIMSS: 'pendiente',
       estatus: 'activo',
     }));
+    // Fase 2: escribir también a Firestore (ficha pública + compensación privada/regla de oro)
+    try {
+      if (typeof fsImportarColaboradores === 'function' && db) {
+        await fsImportarColaboradores(nuevos, verSueldos);
+      }
+    } catch (e) {
+      toast('Error al guardar en Firestore: ' + (e && e.message ? e.message : e));
+      return;
+    }
     setState({ ...state, colaboradores: [...state.colaboradores, ...nuevos] });
     addAuditLog({ modulo: 'colaboradores', accion: 'importar', entidad: 'masivo',
       valorAnterior: null, valorNuevo: { importados: nuevos.length, omitidos: analisis.duplicadas.length, errores: analisis.conError.length } });
-    toast(`${nuevos.length} colaboradores importados.`);
+    toast(`${nuevos.length} colaboradores importados a Firestore.`);
     onClose();
   }
 
