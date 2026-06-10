@@ -32,7 +32,10 @@
   var db = null;
   try {
     if (typeof firebase !== 'undefined') firebase.initializeApp(firebaseConfig);
-    if (typeof firebase !== 'undefined' && firebase.firestore) db = firebase.firestore();
+    if (typeof firebase !== 'undefined' && firebase.firestore) {
+      db = firebase.firestore();
+      db.settings({ ignoreUndefinedProperties: true });  // no fallar por campos undefined (p. ej. fechaEnvio)
+    }
   } catch (e) { console.error('No se pudo inicializar Firebase:', e); }
 </script>
 <style>
