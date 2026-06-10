@@ -601,6 +601,7 @@ async function fsImportarColaboradores(nuevos, verSueldos) {
       }
     });
     await batch.commit();
+    lote.forEach(c => _marcarSyncColab(c, verSueldos));
     escritos += lote.length;
   }
   return escritos;
@@ -624,8 +625,28 @@ async function fsCargarColaboradores(rol, email, verSueldos, sucursalesUsuario) 
   }
   return colabs;
 }
+// Estado de sincronización (global para compartir entre la app y el módulo).
+var _colabSync = {};        // id -> { pub, comp } ya sincronizado con Firestore
+var _fsInicializado = false; // true cuando ya se cargaron los colaboradores de Firestore
+function _marcarSyncColab(c, verSueldos) {
+  var pub = Object.assign({}, c); delete pub.sueldoDiario; delete pub.bonoTransporte;
+  _colabSync[c.id] = { pub: JSON.stringify(pub),
+    comp: verSueldos ? ((c.sueldoDiario||0) + '|' + (c.bonoTransporte||0)) : null };
+}
+// Espera a que Firebase Auth restaure la sesión tras recargar (evita permission-denied prematuro).
+function esperarAuthFirebase(timeoutMs) {
+  timeoutMs = timeoutMs || 8000;
+  if (firebase.auth().currentUser) return Promise.resolve(firebase.auth().currentUser);
+  return new Promise(function(resolve){
+    var done = false;
+    var unsub = firebase.auth().onAuthStateChanged(function(u){
+      if (u && !done) { done = true; try{unsub();}catch(e){} resolve(u); }
+    });
+    setTimeout(function(){ if(!done){ done=true; try{unsub();}catch(e){} resolve(firebase.auth().currentUser); } }, timeoutMs);
+  });
+}
 if (typeof window !== 'undefined') {
-  window.lemFS = { get db(){ return db; }, fsSeedMaestros, fsCargarMaestros, fsImportarColaboradores, fsCargarColaboradores };
+  window.lemFS = { get db(){ return db; }, fsSeedMaestros, fsCargarMaestros, fsImportarColaboradores, fsCargarColaboradores, esperarAuthFirebase };
 }
 
 function aplicarMigraciones(state) {
@@ -6584,6 +6605,69 @@ function App() {
     window.addEventListener('lem:gotoCapture', handler);
     return () => window.removeEventListener('lem:gotoCapture', handler);
   }, []);
+
+  // ===== Fase 2: cargar colaboradores desde Firestore al entrar (según rol) =====
+  useEffect(() => {
+    if (!user || !db) return;
+    _fsInicializado = false;           // bloquea el guardado hasta terminar la carga
+    let cancelado = false;
+    (async () => {
+      await esperarAuthFirebase();     // espera a que Firebase reconozca la sesión
+      if (cancelado) return;
+      const fb = firebase.auth().currentUser;
+      if (!fb) return;
+      try {
+        const verSueldos = user.rol === 'admin' || user.rol === 'contabilidad';
+        const email = (fb.email || '').toLowerCase();
+        let misSucIds = null;
+        if (user.rol === 'gerente' || user.rol === 'asesor') {
+          misSucIds = SEED.sucursales.filter(s =>
+            _emailDeUsuarioId(s.gerenteId) === email || _emailDeUsuarioId(s.asesorId) === email
+          ).map(s => s.id);
+        }
+        const colabs = await fsCargarColaboradores(user.rol, email, verSueldos, misSucIds);
+        if (cancelado) return;
+        _colabSync = {};
+        colabs.forEach(c => _marcarSyncColab(c, verSueldos));
+        _fsInicializado = true;
+        setState(prev => ({ ...prev, colaboradores: colabs }));
+      } catch (e) { console.error('Cargar colaboradores Firestore:', e); }
+    })();
+    return () => { cancelado = true; };
+  }, [user]);
+
+  // ===== Fase 2: guardar cambios de colaboradores en Firestore (diff, solo roles que escriben) =====
+  useEffect(() => {
+    if (!user || !db || !_fsInicializado) return;
+    if (!['admin', 'rh', 'contabilidad'].includes(user.rol)) return;
+    const verSueldos = user.rol === 'admin' || user.rol === 'contabilidad';
+    const cambios = [];
+    (state.colaboradores || []).forEach(c => {
+      const pub = Object.assign({}, c); delete pub.sueldoDiario; delete pub.bonoTransporte;
+      const pubKey = JSON.stringify(pub);
+      const compKey = verSueldos ? ((c.sueldoDiario||0) + '|' + (c.bonoTransporte||0)) : null;
+      const prev = _colabSync[c.id];
+      if (!prev || prev.pub !== pubKey || (verSueldos && prev.comp !== compKey)) {
+        cambios.push({ id: c.id, pub, sd: c.sueldoDiario, bo: c.bonoTransporte,
+          pc: !prev || prev.pub !== pubKey, cc: verSueldos && (!prev || prev.comp !== compKey) });
+        _colabSync[c.id] = { pub: pubKey, comp: compKey };
+      }
+    });
+    if (!cambios.length) return;
+    (async () => {
+      for (let i = 0; i < cambios.length; i += 150) {
+        const lote = cambios.slice(i, i + 150);
+        const batch = db.batch();
+        lote.forEach(x => {
+          const r = db.collection('colaboradores').doc(x.id);
+          if (x.pc) batch.set(r, x.pub, { merge: true });
+          if (x.cc) batch.set(r.collection('privado').doc('compensacion'),
+            { sueldoDiario: x.sd || 0, bonoTransporte: x.bo || 0 }, { merge: true });
+        });
+        try { await batch.commit(); } catch (e) { console.error('Guardar colaboradores Firestore:', e); }
+      }
+    })();
+  }, [state.colaboradores, user]);
 
   function login(u) { setUser(u); setView('dashboard'); show(`Bienvenido, ${u.nombre.split(' ')[0]}.`); }
   function logout() { setUser(null); }
