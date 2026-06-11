@@ -710,8 +710,69 @@ function fsGuardarArray(col, items) {
     }
   })();
 }
+// ---- Movimientos: los de tipo 'sueldo' guardan el MONTO en subcolección privada (regla de oro) ----
+var _movSync = {};   // id -> json del doc público
+function _sanitizarMov(m) {
+  var pub = Object.assign({}, m); delete pub.id;
+  if (m.tipo === 'sueldo') {
+    var priv = { detalleAnterior: (m.detalleAnterior === undefined ? null : m.detalleAnterior),
+                 detalleNuevo:    (m.detalleNuevo === undefined ? null : m.detalleNuevo),
+                 resumen: m.resumen || '' };
+    pub.detalleAnterior = null;
+    pub.detalleNuevo = null;
+    pub.resumen = 'Cambio de sueldo (monto reservado)';
+    pub._montoPrivado = true;
+    return { pub: pub, priv: priv };
+  }
+  return { pub: pub, priv: null };
+}
+async function fsCargarMovimientos(rol, verSueldos) {
+  if (!db) return [];
+  try {
+    var snap = await db.collection('movimientos').get();
+    _movSync = {};
+    var arr = [];
+    for (var d of snap.docs) {
+      var data = d.data();
+      _movSync[d.id] = JSON.stringify(data);
+      var mov = Object.assign({ id: d.id }, data);
+      if (mov._montoPrivado && verSueldos) {
+        try {
+          var p = await db.collection('movimientos').doc(d.id).collection('privado').doc('montos').get();
+          if (p.exists) { mov.detalleAnterior = p.data().detalleAnterior; mov.detalleNuevo = p.data().detalleNuevo; mov.resumen = p.data().resumen; }
+        } catch (e) {}
+      }
+      delete mov._montoPrivado;
+      arr.push(mov);
+    }
+    return arr;
+  } catch (e) { console.error('Cargar movimientos:', e); return []; }
+}
+function fsGuardarMovimientos(items, verSueldos) {
+  if (!db || !_fsInicializado) return;
+  var cambios = [];
+  (items || []).forEach(function(m){
+    if (!m || !m.id) return;
+    var s = _sanitizarMov(m);
+    var json = JSON.stringify(s.pub);
+    if (_movSync[m.id] !== json) { cambios.push({ id: m.id, pub: s.pub, priv: s.priv }); _movSync[m.id] = json; }
+  });
+  if (!cambios.length) return;
+  (async function(){
+    for (var i = 0; i < cambios.length; i += 150) {
+      var lote = cambios.slice(i, i + 150);
+      var batch = db.batch();
+      lote.forEach(function(x){
+        var r = db.collection('movimientos').doc(String(x.id));
+        batch.set(r, x.pub, { merge: true });
+        if (x.priv && verSueldos) batch.set(r.collection('privado').doc('montos'), x.priv, { merge: true });
+      });
+      try { await batch.commit(); } catch (e) { console.error('Guardar movimientos:', e); }
+    }
+  })();
+}
 if (typeof window !== 'undefined') {
-  window.lemFS = { get db(){ return db; }, fsSeedMaestros, fsCargarMaestros, fsImportarColaboradores, fsCargarColaboradores, esperarAuthFirebase, fsCargarMap, fsGuardarMap, fsCargarArray, fsGuardarArray };
+  window.lemFS = { get db(){ return db; }, fsSeedMaestros, fsCargarMaestros, fsImportarColaboradores, fsCargarColaboradores, esperarAuthFirebase, fsCargarMap, fsGuardarMap, fsCargarArray, fsGuardarArray, fsCargarMovimientos, fsGuardarMovimientos };
 }
 
 function aplicarMigraciones(state) {
@@ -6697,12 +6758,15 @@ function App() {
         const baj = await fsCargarArray('bajas');
         const ctr = await fsCargarArray('contratos');
         const notif = await fsCargarArray('notificaciones');
+        const mov = await fsCargarMovimientos(user.rol, verSueldos);
+        const aud = await fsCargarArray('auditoria');
         if (cancelado) return;
         _colabSync = {};
         colabs.forEach(c => _marcarSyncColab(c, verSueldos));
         _fsInicializado = true;
         setState(prev => ({ ...prev, colaboradores: colabs, prenominas: pre, horarios: hor,
-          vacaciones: vac, bajas: baj, contratos: ctr, notificaciones: notif }));
+          vacaciones: vac, bajas: baj, contratos: ctr, notificaciones: notif,
+          movimientos: mov, auditoria: aud }));
       } catch (e) { console.error('Cargar colaboradores Firestore:', e); }
     })();
     return () => { cancelado = true; };
@@ -6748,14 +6812,22 @@ function App() {
     fsGuardarMap('horarios', state.horarios);
   }, [state.prenominas, state.horarios, user]);
 
-  // ===== Fase 4: guardar solicitudes y avisos en Firestore (sin sueldos) =====
+  // ===== Fase 4: guardar solicitudes, avisos y auditoría en Firestore (sin sueldos en claro) =====
   useEffect(() => {
     if (!user || !db || !_fsInicializado) return;
     fsGuardarArray('vacaciones', state.vacaciones);
     fsGuardarArray('bajas', state.bajas);
     fsGuardarArray('contratos', state.contratos);
     fsGuardarArray('notificaciones', state.notificaciones);
-  }, [state.vacaciones, state.bajas, state.contratos, state.notificaciones, user]);
+    fsGuardarArray('auditoria', state.auditoria);
+  }, [state.vacaciones, state.bajas, state.contratos, state.notificaciones, state.auditoria, user]);
+
+  // ===== Fase 5: guardar movimientos (montos de sueldo en subcolección privada) =====
+  useEffect(() => {
+    if (!user || !db || !_fsInicializado) return;
+    const verSueldos = user.rol === 'admin' || user.rol === 'contabilidad';
+    fsGuardarMovimientos(state.movimientos, verSueldos);
+  }, [state.movimientos, user]);
 
   function login(u) { setUser(u); setView('dashboard'); show(`Bienvenido, ${u.nombre.split(' ')[0]}.`); }
   function logout() { setUser(null); }
@@ -6764,6 +6836,7 @@ function App() {
     setState(prev => ({
       ...prev,
       auditoria: [...(prev.auditoria || []), {
+        id: 'aud_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
         fecha: new Date().toISOString(),
         usuarioId: user.id, modulo, accion, entidad,
         valorAnterior, valorNuevo
