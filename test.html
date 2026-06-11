@@ -677,8 +677,41 @@ function fsGuardarMap(col, datos) {
     }
   })();
 }
+// ---- Sync genérico para colecciones tipo ARREGLO (items con id: vacaciones, bajas, contratos, notificaciones) ----
+var _colArrSync = {};   // col -> { id -> json }
+async function fsCargarArray(col) {
+  if (!db) return [];
+  try {
+    var snap = await db.collection(col).get();
+    _colArrSync[col] = {};
+    return snap.docs.map(function(d){
+      _colArrSync[col][d.id] = JSON.stringify(d.data());
+      return Object.assign({ id: d.id }, d.data());
+    });
+  } catch (e) { console.error('Cargar ' + col + ':', e); return []; }
+}
+function fsGuardarArray(col, items) {
+  if (!db || !_fsInicializado) return;
+  var sync = _colArrSync[col] || (_colArrSync[col] = {});
+  var cambios = [];
+  (items || []).forEach(function(it){
+    if (!it || !it.id) return;
+    var data = Object.assign({}, it); delete data.id;
+    var json = JSON.stringify(data);
+    if (sync[it.id] !== json) { cambios.push({ id: it.id, data: data }); sync[it.id] = json; }
+  });
+  if (!cambios.length) return;
+  (async function(){
+    for (var i = 0; i < cambios.length; i += 200) {
+      var lote = cambios.slice(i, i + 200);
+      var batch = db.batch();
+      lote.forEach(function(x){ batch.set(db.collection(col).doc(String(x.id)), x.data, { merge: true }); });
+      try { await batch.commit(); } catch (e) { console.error('Guardar ' + col + ':', e); }
+    }
+  })();
+}
 if (typeof window !== 'undefined') {
-  window.lemFS = { get db(){ return db; }, fsSeedMaestros, fsCargarMaestros, fsImportarColaboradores, fsCargarColaboradores, esperarAuthFirebase, fsCargarMap, fsGuardarMap };
+  window.lemFS = { get db(){ return db; }, fsSeedMaestros, fsCargarMaestros, fsImportarColaboradores, fsCargarColaboradores, esperarAuthFirebase, fsCargarMap, fsGuardarMap, fsCargarArray, fsGuardarArray };
 }
 
 function aplicarMigraciones(state) {
@@ -3496,7 +3529,7 @@ function PrenominaCapture({ presetSucursalId }) {
             {/* Acciones de gerente */}
             {user.rol === 'gerente' && !isReadOnly && (
               <>
-                <button className="btn btn-secondary" onClick={() => toast('Borrador guardado.')}><Icon name="check" size={14}/>Guardar borrador</button>
+                <button className="btn btn-secondary" onClick={() => { setState({ ...state, prenominas: { ...state.prenominas, [preKey]: prenomina } }); toast('Borrador guardado.'); }}><Icon name="check" size={14}/>Guardar borrador</button>
                 <button className="btn btn-primary" onClick={() => setSendModal(true)} disabled={validacion.bloqueantes.length > 0}>
                   <Icon name="upload" size={14}/>Enviar a contabilidad
                 </button>
@@ -6660,11 +6693,16 @@ function App() {
         const colabs = await fsCargarColaboradores(user.rol, email, verSueldos, misSucIds);
         const pre = await fsCargarMap('prenominas');
         const hor = await fsCargarMap('horarios');
+        const vac = await fsCargarArray('vacaciones');
+        const baj = await fsCargarArray('bajas');
+        const ctr = await fsCargarArray('contratos');
+        const notif = await fsCargarArray('notificaciones');
         if (cancelado) return;
         _colabSync = {};
         colabs.forEach(c => _marcarSyncColab(c, verSueldos));
         _fsInicializado = true;
-        setState(prev => ({ ...prev, colaboradores: colabs, prenominas: pre, horarios: hor }));
+        setState(prev => ({ ...prev, colaboradores: colabs, prenominas: pre, horarios: hor,
+          vacaciones: vac, bajas: baj, contratos: ctr, notificaciones: notif }));
       } catch (e) { console.error('Cargar colaboradores Firestore:', e); }
     })();
     return () => { cancelado = true; };
@@ -6709,6 +6747,15 @@ function App() {
     fsGuardarMap('prenominas', state.prenominas);
     fsGuardarMap('horarios', state.horarios);
   }, [state.prenominas, state.horarios, user]);
+
+  // ===== Fase 4: guardar solicitudes y avisos en Firestore (sin sueldos) =====
+  useEffect(() => {
+    if (!user || !db || !_fsInicializado) return;
+    fsGuardarArray('vacaciones', state.vacaciones);
+    fsGuardarArray('bajas', state.bajas);
+    fsGuardarArray('contratos', state.contratos);
+    fsGuardarArray('notificaciones', state.notificaciones);
+  }, [state.vacaciones, state.bajas, state.contratos, state.notificaciones, user]);
 
   function login(u) { setUser(u); setView('dashboard'); show(`Bienvenido, ${u.nombre.split(' ')[0]}.`); }
   function logout() { setUser(null); }
