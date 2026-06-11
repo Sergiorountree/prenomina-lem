@@ -15,6 +15,7 @@
 <!-- Firebase Authentication (Fase 1) — SDK compat para entorno sin módulos -->
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
 <script>
   /* Configuración del proyecto Firebase "prenomina-lem".
      IMPORTANTE: estas llaves NO son secretas. Pueden vivir en el HTML y en GitHub.
@@ -28,8 +29,13 @@
     appId: "1:551027718914:web:0a08b467a44664f6c2601b",
     measurementId: "G-EZT0HRC6JH"
   };
+  var db = null;
   try {
     if (typeof firebase !== 'undefined') firebase.initializeApp(firebaseConfig);
+    if (typeof firebase !== 'undefined' && firebase.firestore) {
+      db = firebase.firestore();
+      db.settings({ ignoreUndefinedProperties: true });  // no fallar por campos undefined (p. ej. fechaEnvio)
+    }
   } catch (e) { console.error('No se pudo inicializar Firebase:', e); }
 </script>
 <style>
@@ -536,6 +542,239 @@ function saveState(state) {
    nuevos del SEED (p. ej. gerentes de sucursal agregados después) SIN
    cambiar el STORAGE_KEY ni borrar lo ya capturado. Se ejecutan en cada
    carga sin duplicar usuarios ni pisar asignaciones existentes. */
+/* ============================================================
+   CAPA DE DATOS FIRESTORE (Fase 2 — en construcción)
+   Funciones NUEVAS y aisladas: la app todavía NO las usa (sigue
+   en localStorage). Sirven para sembrar catálogos, importar y leer
+   contra Firestore, y probarse desde la consola (window.lemFS)
+   ANTES de re-cablear la app.
+   ============================================================ */
+function _normEmail(e) { return String(e || '').trim().toLowerCase(); }
+function _emailDeUsuarioId(uid) {
+  if (!uid) return null;
+  const u = SEED.usuarios.find(x => x.id === uid);
+  return u ? _normEmail(u.email) : null;
+}
+// Siembra catálogos maestros (usuarios, sucursales, config). Solo Admin (lo exigen las reglas).
+async function fsSeedMaestros() {
+  if (!db) throw new Error('Firestore no disponible');
+  const batch = db.batch();
+  SEED.usuarios.forEach(u => {
+    batch.set(db.collection('usuarios').doc(_normEmail(u.email)),
+      { email: _normEmail(u.email), rol: u.rol, nombre: u.nombre, puestoLabel: u.puestoLabel || '', activo: true },
+      { merge: true });
+  });
+  SEED.sucursales.forEach(s => {
+    batch.set(db.collection('sucursales').doc(s.id),
+      { nombre: s.nombre, unId: s.unId, plantillaObjetivo: s.plantillaObjetivo || 0,
+        gerenteEmail: _emailDeUsuarioId(s.gerenteId), asesorEmail: _emailDeUsuarioId(s.asesorId) },
+      { merge: true });
+  });
+  batch.set(db.collection('config').doc('catalogos'),
+    { unidades: SEED.unidades, puestos: SEED.puestos, motivosBaja: SEED.motivosBaja }, { merge: true });
+  await batch.commit();
+  return { usuarios: SEED.usuarios.length, sucursales: SEED.sucursales.length };
+}
+async function fsCargarMaestros() {
+  const [us, sus, cat] = await Promise.all([
+    db.collection('usuarios').get(),
+    db.collection('sucursales').get(),
+    db.collection('config').doc('catalogos').get(),
+  ]);
+  return {
+    usuarios: us.docs.map(d => ({ id: d.id, ...d.data() })),
+    sucursales: sus.docs.map(d => ({ id: d.id, ...d.data() })),
+    catalogos: cat.exists ? cat.data() : null,
+  };
+}
+// Importa colaboradores: ficha pública + sub-ficha privada de compensación (regla de oro).
+async function fsImportarColaboradores(nuevos, verSueldos) {
+  if (!db) throw new Error('Firestore no disponible');
+  let escritos = 0;
+  for (let i = 0; i < nuevos.length; i += 200) {
+    const lote = nuevos.slice(i, i + 200);
+    const batch = db.batch();
+    lote.forEach(c => {
+      const { sueldoDiario, bonoTransporte, ...publico } = c;
+      const ref = db.collection('colaboradores').doc(c.id);
+      batch.set(ref, publico, { merge: true });
+      if (verSueldos) {
+        batch.set(ref.collection('privado').doc('compensacion'),
+          { sueldoDiario: sueldoDiario || 0, bonoTransporte: bonoTransporte || 0 }, { merge: true });
+      }
+    });
+    await batch.commit();
+    lote.forEach(c => _marcarSyncColab(c, verSueldos));
+    escritos += lote.length;
+  }
+  return escritos;
+}
+async function fsCargarColaboradores(rol, email, verSueldos, sucursalesUsuario) {
+  if (!db) throw new Error('Firestore no disponible');
+  let docs = [];
+  if (['admin','rh','contabilidad'].includes(rol)) {
+    docs = (await db.collection('colaboradores').get()).docs;
+  } else {
+    const ids = (sucursalesUsuario || []).slice(0, 30);
+    if (!ids.length) return [];
+    docs = (await db.collection('colaboradores').where('sucursalId', 'in', ids).get()).docs;
+  }
+  const colabs = docs.map(d => ({ id: d.id, ...d.data() }));
+  if (verSueldos) {
+    await Promise.all(colabs.map(async c => {
+      const p = await db.collection('colaboradores').doc(c.id).collection('privado').doc('compensacion').get();
+      if (p.exists) { c.sueldoDiario = p.data().sueldoDiario; c.bonoTransporte = p.data().bonoTransporte; }
+    }));
+  }
+  return colabs;
+}
+// Estado de sincronización (global para compartir entre la app y el módulo).
+var _colabSync = {};        // id -> { pub, comp } ya sincronizado con Firestore
+var _fsInicializado = false; // true cuando ya se cargaron los colaboradores de Firestore
+function _marcarSyncColab(c, verSueldos) {
+  var pub = Object.assign({}, c); delete pub.sueldoDiario; delete pub.bonoTransporte;
+  _colabSync[c.id] = { pub: JSON.stringify(pub),
+    comp: verSueldos ? ((c.sueldoDiario||0) + '|' + (c.bonoTransporte||0)) : null };
+}
+// Espera a que Firebase Auth restaure la sesión tras recargar (evita permission-denied prematuro).
+function esperarAuthFirebase(timeoutMs) {
+  timeoutMs = timeoutMs || 8000;
+  if (firebase.auth().currentUser) return Promise.resolve(firebase.auth().currentUser);
+  return new Promise(function(resolve){
+    var done = false;
+    var unsub = firebase.auth().onAuthStateChanged(function(u){
+      if (u && !done) { done = true; try{unsub();}catch(e){} resolve(u); }
+    });
+    setTimeout(function(){ if(!done){ done=true; try{unsub();}catch(e){} resolve(firebase.auth().currentUser); } }, timeoutMs);
+  });
+}
+// ---- Sync genérico para colecciones tipo MAPA (objeto keyed: prenominas, horarios) ----
+var _colMapSync = {};   // col -> { docId -> json }
+async function fsCargarMap(col) {
+  if (!db) return {};
+  try {
+    var snap = await db.collection(col).get();
+    var obj = {}; _colMapSync[col] = {};
+    snap.docs.forEach(function(d){ obj[d.id] = d.data(); _colMapSync[col][d.id] = JSON.stringify(d.data()); });
+    return obj;
+  } catch (e) { console.error('Cargar ' + col + ':', e); return {}; }
+}
+function fsGuardarMap(col, datos) {
+  if (!db || !_fsInicializado) return;
+  var sync = _colMapSync[col] || (_colMapSync[col] = {});
+  var cambios = [];
+  Object.keys(datos || {}).forEach(function(k){
+    var json = JSON.stringify(datos[k]);
+    if (sync[k] !== json) { cambios.push({ id: k, data: datos[k] }); sync[k] = json; }
+  });
+  if (!cambios.length) return;
+  (async function(){
+    for (var i = 0; i < cambios.length; i += 200) {
+      var lote = cambios.slice(i, i + 200);
+      var batch = db.batch();
+      lote.forEach(function(x){ batch.set(db.collection(col).doc(String(x.id)), x.data, { merge: true }); });
+      try { await batch.commit(); } catch (e) { console.error('Guardar ' + col + ':', e); }
+    }
+  })();
+}
+// ---- Sync genérico para colecciones tipo ARREGLO (items con id: vacaciones, bajas, contratos, notificaciones) ----
+var _colArrSync = {};   // col -> { id -> json }
+async function fsCargarArray(col) {
+  if (!db) return [];
+  try {
+    var snap = await db.collection(col).get();
+    _colArrSync[col] = {};
+    return snap.docs.map(function(d){
+      _colArrSync[col][d.id] = JSON.stringify(d.data());
+      return Object.assign({ id: d.id }, d.data());
+    });
+  } catch (e) { console.error('Cargar ' + col + ':', e); return []; }
+}
+function fsGuardarArray(col, items) {
+  if (!db || !_fsInicializado) return;
+  var sync = _colArrSync[col] || (_colArrSync[col] = {});
+  var cambios = [];
+  (items || []).forEach(function(it){
+    if (!it || !it.id) return;
+    var data = Object.assign({}, it); delete data.id;
+    var json = JSON.stringify(data);
+    if (sync[it.id] !== json) { cambios.push({ id: it.id, data: data }); sync[it.id] = json; }
+  });
+  if (!cambios.length) return;
+  (async function(){
+    for (var i = 0; i < cambios.length; i += 200) {
+      var lote = cambios.slice(i, i + 200);
+      var batch = db.batch();
+      lote.forEach(function(x){ batch.set(db.collection(col).doc(String(x.id)), x.data, { merge: true }); });
+      try { await batch.commit(); } catch (e) { console.error('Guardar ' + col + ':', e); }
+    }
+  })();
+}
+// ---- Movimientos: los de tipo 'sueldo' guardan el MONTO en subcolección privada (regla de oro) ----
+var _movSync = {};   // id -> json del doc público
+function _sanitizarMov(m) {
+  var pub = Object.assign({}, m); delete pub.id;
+  if (m.tipo === 'sueldo') {
+    var priv = { detalleAnterior: (m.detalleAnterior === undefined ? null : m.detalleAnterior),
+                 detalleNuevo:    (m.detalleNuevo === undefined ? null : m.detalleNuevo),
+                 resumen: m.resumen || '' };
+    pub.detalleAnterior = null;
+    pub.detalleNuevo = null;
+    pub.resumen = 'Cambio de sueldo (monto reservado)';
+    pub._montoPrivado = true;
+    return { pub: pub, priv: priv };
+  }
+  return { pub: pub, priv: null };
+}
+async function fsCargarMovimientos(rol, verSueldos) {
+  if (!db) return [];
+  try {
+    var snap = await db.collection('movimientos').get();
+    _movSync = {};
+    var arr = [];
+    for (var d of snap.docs) {
+      var data = d.data();
+      _movSync[d.id] = JSON.stringify(data);
+      var mov = Object.assign({ id: d.id }, data);
+      if (mov._montoPrivado && verSueldos) {
+        try {
+          var p = await db.collection('movimientos').doc(d.id).collection('privado').doc('montos').get();
+          if (p.exists) { mov.detalleAnterior = p.data().detalleAnterior; mov.detalleNuevo = p.data().detalleNuevo; mov.resumen = p.data().resumen; }
+        } catch (e) {}
+      }
+      delete mov._montoPrivado;
+      arr.push(mov);
+    }
+    return arr;
+  } catch (e) { console.error('Cargar movimientos:', e); return []; }
+}
+function fsGuardarMovimientos(items, verSueldos) {
+  if (!db || !_fsInicializado) return;
+  var cambios = [];
+  (items || []).forEach(function(m){
+    if (!m || !m.id) return;
+    var s = _sanitizarMov(m);
+    var json = JSON.stringify(s.pub);
+    if (_movSync[m.id] !== json) { cambios.push({ id: m.id, pub: s.pub, priv: s.priv }); _movSync[m.id] = json; }
+  });
+  if (!cambios.length) return;
+  (async function(){
+    for (var i = 0; i < cambios.length; i += 150) {
+      var lote = cambios.slice(i, i + 150);
+      var batch = db.batch();
+      lote.forEach(function(x){
+        var r = db.collection('movimientos').doc(String(x.id));
+        batch.set(r, x.pub, { merge: true });
+        if (x.priv && verSueldos) batch.set(r.collection('privado').doc('montos'), x.priv, { merge: true });
+      });
+      try { await batch.commit(); } catch (e) { console.error('Guardar movimientos:', e); }
+    }
+  })();
+}
+if (typeof window !== 'undefined') {
+  window.lemFS = { get db(){ return db; }, fsSeedMaestros, fsCargarMaestros, fsImportarColaboradores, fsCargarColaboradores, esperarAuthFirebase, fsCargarMap, fsGuardarMap, fsCargarArray, fsGuardarArray, fsCargarMovimientos, fsGuardarMovimientos };
+}
+
 function aplicarMigraciones(state) {
   // 1) Agregar usuarios del SEED que aún no existan (match por email).
   const emails = new Set((state.usuarios || []).map(u => (u.email || '').toLowerCase()));
@@ -2451,7 +2690,7 @@ function ImportarColaboradoresModal({ onClose }) {
     setPaso('revisar');
   }
 
-  function confirmarImport() {
+  async function confirmarImport() {
     const base = state.colaboradores.length;
     const nuevos = analisis.validas.map((reg, i) => ({
       id: 'c_' + Date.now().toString(36) + '_' + i,
@@ -2467,10 +2706,19 @@ function ImportarColaboradoresModal({ onClose }) {
       statusIMSS: 'pendiente',
       estatus: 'activo',
     }));
+    // Fase 2: escribir también a Firestore (ficha pública + compensación privada/regla de oro)
+    try {
+      if (typeof fsImportarColaboradores === 'function' && db) {
+        await fsImportarColaboradores(nuevos, verSueldos);
+      }
+    } catch (e) {
+      toast('Error al guardar en Firestore: ' + (e && e.message ? e.message : e));
+      return;
+    }
     setState({ ...state, colaboradores: [...state.colaboradores, ...nuevos] });
     addAuditLog({ modulo: 'colaboradores', accion: 'importar', entidad: 'masivo',
       valorAnterior: null, valorNuevo: { importados: nuevos.length, omitidos: analisis.duplicadas.length, errores: analisis.conError.length } });
-    toast(`${nuevos.length} colaboradores importados.`);
+    toast(`${nuevos.length} colaboradores importados a Firestore.`);
     onClose();
   }
 
@@ -3342,7 +3590,7 @@ function PrenominaCapture({ presetSucursalId }) {
             {/* Acciones de gerente */}
             {user.rol === 'gerente' && !isReadOnly && (
               <>
-                <button className="btn btn-secondary" onClick={() => toast('Borrador guardado.')}><Icon name="check" size={14}/>Guardar borrador</button>
+                <button className="btn btn-secondary" onClick={() => { setState({ ...state, prenominas: { ...state.prenominas, [preKey]: prenomina } }); toast('Borrador guardado.'); }}><Icon name="check" size={14}/>Guardar borrador</button>
                 <button className="btn btn-primary" onClick={() => setSendModal(true)} disabled={validacion.bloqueantes.length > 0}>
                   <Icon name="upload" size={14}/>Enviar a contabilidad
                 </button>
@@ -6484,6 +6732,103 @@ function App() {
     return () => window.removeEventListener('lem:gotoCapture', handler);
   }, []);
 
+  // ===== Fase 2: cargar colaboradores desde Firestore al entrar (según rol) =====
+  useEffect(() => {
+    if (!user || !db) return;
+    _fsInicializado = false;           // bloquea el guardado hasta terminar la carga
+    let cancelado = false;
+    (async () => {
+      await esperarAuthFirebase();     // espera a que Firebase reconozca la sesión
+      if (cancelado) return;
+      const fb = firebase.auth().currentUser;
+      if (!fb) return;
+      try {
+        const verSueldos = user.rol === 'admin' || user.rol === 'contabilidad';
+        const email = (fb.email || '').toLowerCase();
+        let misSucIds = null;
+        if (user.rol === 'gerente' || user.rol === 'asesor') {
+          misSucIds = SEED.sucursales.filter(s =>
+            _emailDeUsuarioId(s.gerenteId) === email || _emailDeUsuarioId(s.asesorId) === email
+          ).map(s => s.id);
+        }
+        const colabs = await fsCargarColaboradores(user.rol, email, verSueldos, misSucIds);
+        const pre = await fsCargarMap('prenominas');
+        const hor = await fsCargarMap('horarios');
+        const vac = await fsCargarArray('vacaciones');
+        const baj = await fsCargarArray('bajas');
+        const ctr = await fsCargarArray('contratos');
+        const notif = await fsCargarArray('notificaciones');
+        const mov = await fsCargarMovimientos(user.rol, verSueldos);
+        const aud = await fsCargarArray('auditoria');
+        if (cancelado) return;
+        _colabSync = {};
+        colabs.forEach(c => _marcarSyncColab(c, verSueldos));
+        _fsInicializado = true;
+        setState(prev => ({ ...prev, colaboradores: colabs, prenominas: pre, horarios: hor,
+          vacaciones: vac, bajas: baj, contratos: ctr, notificaciones: notif,
+          movimientos: mov, auditoria: aud }));
+      } catch (e) { console.error('Cargar colaboradores Firestore:', e); }
+    })();
+    return () => { cancelado = true; };
+  }, [user]);
+
+  // ===== Fase 2: guardar cambios de colaboradores en Firestore (diff, solo roles que escriben) =====
+  useEffect(() => {
+    if (!user || !db || !_fsInicializado) return;
+    if (!['admin', 'rh', 'contabilidad'].includes(user.rol)) return;
+    const verSueldos = user.rol === 'admin' || user.rol === 'contabilidad';
+    const cambios = [];
+    (state.colaboradores || []).forEach(c => {
+      const pub = Object.assign({}, c); delete pub.sueldoDiario; delete pub.bonoTransporte;
+      const pubKey = JSON.stringify(pub);
+      const compKey = verSueldos ? ((c.sueldoDiario||0) + '|' + (c.bonoTransporte||0)) : null;
+      const prev = _colabSync[c.id];
+      if (!prev || prev.pub !== pubKey || (verSueldos && prev.comp !== compKey)) {
+        cambios.push({ id: c.id, pub, sd: c.sueldoDiario, bo: c.bonoTransporte,
+          pc: !prev || prev.pub !== pubKey, cc: verSueldos && (!prev || prev.comp !== compKey) });
+        _colabSync[c.id] = { pub: pubKey, comp: compKey };
+      }
+    });
+    if (!cambios.length) return;
+    (async () => {
+      for (let i = 0; i < cambios.length; i += 150) {
+        const lote = cambios.slice(i, i + 150);
+        const batch = db.batch();
+        lote.forEach(x => {
+          const r = db.collection('colaboradores').doc(x.id);
+          if (x.pc) batch.set(r, x.pub, { merge: true });
+          if (x.cc) batch.set(r.collection('privado').doc('compensacion'),
+            { sueldoDiario: x.sd || 0, bonoTransporte: x.bo || 0 }, { merge: true });
+        });
+        try { await batch.commit(); } catch (e) { console.error('Guardar colaboradores Firestore:', e); }
+      }
+    })();
+  }, [state.colaboradores, user]);
+
+  // ===== Fase 3: guardar pre-nóminas y horarios en Firestore (diff) =====
+  useEffect(() => {
+    if (!user || !db || !_fsInicializado) return;
+    fsGuardarMap('prenominas', state.prenominas);
+    fsGuardarMap('horarios', state.horarios);
+  }, [state.prenominas, state.horarios, user]);
+
+  // ===== Fase 4: guardar solicitudes, avisos y auditoría en Firestore (sin sueldos en claro) =====
+  useEffect(() => {
+    if (!user || !db || !_fsInicializado) return;
+    fsGuardarArray('vacaciones', state.vacaciones);
+    fsGuardarArray('bajas', state.bajas);
+    fsGuardarArray('contratos', state.contratos);
+    fsGuardarArray('notificaciones', state.notificaciones);
+    fsGuardarArray('auditoria', state.auditoria);
+  }, [state.vacaciones, state.bajas, state.contratos, state.notificaciones, state.auditoria, user]);
+
+  // ===== Fase 5: guardar movimientos (montos de sueldo en subcolección privada) =====
+  useEffect(() => {
+    if (!user || !db || !_fsInicializado) return;
+    const verSueldos = user.rol === 'admin' || user.rol === 'contabilidad';
+    fsGuardarMovimientos(state.movimientos, verSueldos);
+  }, [state.movimientos, user]);
+
   function login(u) { setUser(u); setView('dashboard'); show(`Bienvenido, ${u.nombre.split(' ')[0]}.`); }
   function logout() { setUser(null); }
 
@@ -6491,6 +6836,7 @@ function App() {
     setState(prev => ({
       ...prev,
       auditoria: [...(prev.auditoria || []), {
+        id: 'aud_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
         fecha: new Date().toISOString(),
         usuarioId: user.id, modulo, accion, entidad,
         valorAnterior, valorNuevo
