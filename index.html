@@ -2285,8 +2285,8 @@ function ColaboradoresList() {
   if (filter) {
     const f = filter.toLowerCase();
     lista = lista.filter(c =>
-      c.nombre.toLowerCase().includes(f) ||
-      c.apellidoPaterno.toLowerCase().includes(f) ||
+      (c.nombre||'').toLowerCase().includes(f) ||
+      (c.apellidoPaterno||'').toLowerCase().includes(f) ||
       c.apellidoMaterno?.toLowerCase().includes(f) ||
       c.curp?.toLowerCase().includes(f) ||
       c.rfc?.toLowerCase().includes(f)
@@ -2387,7 +2387,7 @@ function ColaboradoresList() {
                         </td>
                         {!esGerente && <td className="text-gray-700 text-sm">{fmtAntiguedad(c.fechaIngreso)}</td>}
                         <td><EstatusPill estatus={c.estatus} /></td>
-                        {verSueldos && <td className="num">{puedeVerSueldo(c) ? '$' + c.sueldoDiario.toLocaleString('es-MX') : <span className="text-gray-400">—</span>}</td>}
+                        {verSueldos && <td className="num">{puedeVerSueldo(c) ? '$' + (c.sueldoDiario||0).toLocaleString('es-MX') : <span className="text-gray-400">—</span>}</td>}
                         {!esGerente && (
                           <td>
                             <button onClick={() => setDetalle(c)} className="btn btn-ghost p-2 tip">
@@ -2449,7 +2449,7 @@ function ColaboradoresList() {
                         <td className="num text-xs">{fmtFecha(c.fechaIngreso)}</td>
                         <td className="text-xs">{fmtAntiguedad(c.fechaIngreso)}</td>
                         <td><EstatusPill estatus={c.estatus} /></td>
-                        {verSueldos && <td className="num text-sm">{puedeVerSueldo(c) ? '$'+c.sueldoDiario.toLocaleString('es-MX') : <span className="text-gray-400">—</span>}</td>}
+                        {verSueldos && <td className="num text-sm">{puedeVerSueldo(c) ? '$'+(c.sueldoDiario||0).toLocaleString('es-MX') : <span className="text-gray-400">—</span>}</td>}
                         {verSueldos && <td className="num text-sm">{puedeVerSueldo(c) ? (c.bonoTransporte ? '$'+c.bonoTransporte.toLocaleString('es-MX') : '$0') : <span className="text-gray-400">—</span>}</td>}
                         <td>
                           <button onClick={() => setDetalle(c)} className="btn btn-ghost p-1.5">
@@ -3199,6 +3199,27 @@ function ColaboradorFicha({ colab, puedeVerSueldo, onClose }) {
   // Solo Admin y Contabilidad ven y editan el estatus ante el IMSS
   const verIMSS = user.rol === 'admin' || user.rol === 'contabilidad';
 
+  // Edición de expediente (Admin, RH, Contabilidad — no toca sueldo)
+  const puedeEditar = user.rol === 'admin' || user.rol === 'rh' || user.rol === 'contabilidad';
+  const [editando, setEditando] = useState(false);
+  const [form, setForm] = useState(() => ({
+    nombre: colab.nombre || '', apellidoPaterno: colab.apellidoPaterno || '', apellidoMaterno: colab.apellidoMaterno || '',
+    curp: colab.curp || '', rfc: colab.rfc || '', nss: colab.nss || '',
+    fechaNacimiento: colab.fechaNacimiento || '', telefono: colab.telefono || '', correo: colab.correo || '',
+    sucursalId: colab.sucursalId || '', puestoId: colab.puestoId || '', fechaIngreso: colab.fechaIngreso || '',
+  }));
+  const setF = (k, v) => setForm(p => ({ ...p, [k]: v }));
+  const _inp = { width:'100%', border:'1px solid var(--border)', borderRadius:8, padding:'8px 10px', marginTop:4, fontSize:13, color:'#2b2b33' };
+  const _lbl = { fontSize:11, color:'#6b6b76', display:'block', textTransform:'uppercase', letterSpacing:'.04em' };
+  function guardarEdicion() {
+    if (!form.nombre.trim() || !form.apellidoPaterno.trim()) { toast('Nombre y apellido paterno son obligatorios.'); return; }
+    setState({ ...state, colaboradores: state.colaboradores.map(c => c.id === colab.id ? { ...c, ...form } : c) });
+    addAuditLog({ modulo: 'colaboradores', accion: 'editar', entidad: colab.id,
+      valorAnterior: { nombre: colab.nombre }, valorNuevo: { nombre: form.nombre } });
+    toast('Expediente actualizado.');
+    onClose();
+  }
+
   function cambiarIMSS(nuevo) {
     const colabs = state.colaboradores.map(c => c.id === colab.id ? { ...c, statusIMSS: nuevo } : c);
     setState({ ...state, colaboradores: colabs });
@@ -3236,7 +3257,7 @@ function ColaboradorFicha({ colab, puedeVerSueldo, onClose }) {
         </div>
 
         {/* Cuerpo */}
-        <div className="p-6 space-y-5">
+        {!editando && (<div className="p-6 space-y-5">
           <div>
             <div className="text-xs uppercase tracking-wider text-gray-500 font-medium mb-3">Datos personales</div>
             <div className="grid grid-cols-2 gap-4">
@@ -3284,7 +3305,7 @@ function ColaboradorFicha({ colab, puedeVerSueldo, onClose }) {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <div className="text-[10px] uppercase tracking-wider font-medium mb-0.5" style={{color:'var(--lem-dark)'}}>Sueldo diario</div>
-                  <div className="text-lg font-medium num">${colab.sueldoDiario.toLocaleString('es-MX')}</div>
+                  <div className="text-lg font-medium num">${(colab.sueldoDiario||0).toLocaleString('es-MX')}</div>
                 </div>
                 <div>
                   <div className="text-[10px] uppercase tracking-wider font-medium mb-0.5" style={{color:'var(--lem-dark)'}}>Bono de transporte (semanal)</div>
@@ -3316,11 +3337,39 @@ function ColaboradorFicha({ colab, puedeVerSueldo, onClose }) {
               </div>
             );
           })()}
-        </div>
+        </div>)}
+
+        {editando && (
+          <div className="p-6 grid grid-cols-2 gap-3">
+            <label style={_lbl}>Nombre(s)<input style={_inp} value={form.nombre} onChange={e => setF('nombre', e.target.value)} /></label>
+            <label style={_lbl}>Apellido paterno<input style={_inp} value={form.apellidoPaterno} onChange={e => setF('apellidoPaterno', e.target.value)} /></label>
+            <label style={_lbl}>Apellido materno<input style={_inp} value={form.apellidoMaterno} onChange={e => setF('apellidoMaterno', e.target.value)} /></label>
+            <label style={_lbl}>CURP<input style={_inp} value={form.curp} onChange={e => setF('curp', e.target.value.toUpperCase())} /></label>
+            <label style={_lbl}>RFC<input style={_inp} value={form.rfc} onChange={e => setF('rfc', e.target.value.toUpperCase())} /></label>
+            <label style={_lbl}>NSS<input style={_inp} value={form.nss} onChange={e => setF('nss', e.target.value)} /></label>
+            <label style={_lbl}>Fecha de nacimiento<input type="date" style={_inp} value={form.fechaNacimiento} onChange={e => setF('fechaNacimiento', e.target.value)} /></label>
+            <label style={_lbl}>Teléfono<input style={_inp} value={form.telefono} onChange={e => setF('telefono', e.target.value)} /></label>
+            <label style={_lbl}>Correo<input style={_inp} value={form.correo} onChange={e => setF('correo', e.target.value)} /></label>
+            <label style={_lbl}>Fecha de ingreso<input type="date" style={_inp} value={form.fechaIngreso} onChange={e => setF('fechaIngreso', e.target.value)} /></label>
+            <label style={_lbl}>Sucursal<select style={_inp} value={form.sucursalId} onChange={e => setF('sucursalId', e.target.value)}>
+              {(state.sucursales || SEED.sucursales).map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}</select></label>
+            <label style={_lbl}>Puesto<select style={_inp} value={form.puestoId} onChange={e => setF('puestoId', e.target.value)}>
+              {SEED.puestos.map(p => <option key={p.id} value={p.id}>{p.nombre}</option>)}</select></label>
+          </div>
+        )}
 
         <div className="px-6 py-4 flex justify-end gap-2" style={{borderTop:'1px solid var(--border)'}}>
-          <button onClick={onClose} className="btn btn-secondary">Cerrar</button>
-          <button className="btn btn-primary"><Icon name="file" size={14} /> Editar expediente</button>
+          {editando ? (
+            <>
+              <button onClick={() => setEditando(false)} className="btn btn-secondary">Cancelar</button>
+              <button onClick={guardarEdicion} className="btn btn-primary"><Icon name="check" size={14} /> Guardar cambios</button>
+            </>
+          ) : (
+            <>
+              <button onClick={onClose} className="btn btn-secondary">Cerrar</button>
+              {puedeEditar && <button onClick={() => setEditando(true)} className="btn btn-primary"><Icon name="file" size={14} /> Editar expediente</button>}
+            </>
+          )}
         </div>
       </div>
     </div>
