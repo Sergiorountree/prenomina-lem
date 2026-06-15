@@ -4395,9 +4395,14 @@ function SucursalModal({ mode, sucursal, unidades, gerentes, asesores, onClose, 
 function HorarioScreen() {
   const { user, state, setState, addAuditLog, toast } = useApp();
 
-  // La próxima semana = lunes de hoy + 7 días
-  const proxMonday = addDays(getMonday(), 7);
+  // Navegación de semanas: 0 = semana en curso, 1 = próxima, -1 = anterior, etc.
+  // Por defecto abre en la próxima semana (la que el gerente planea).
+  const [weekOffset, setWeekOffset] = useState(1);
+  const proxMonday = addDays(getMonday(), weekOffset * 7);
   const proxWeekId = getWeekId(proxMonday);
+  const esActual = weekOffset === 0;
+  const esProxima = weekOffset === 1;
+  const esPasada = weekOffset < 0;
 
   // Sucursales disponibles según rol
   const sucursalesDisp = useMemo(() => {
@@ -4419,8 +4424,9 @@ function HorarioScreen() {
   const horario = state.horarios?.[horKey] || { sucursalId, weekId: proxWeekId,
     semanaInicio: dateKey(proxMonday), detalle: {}, estado: 'borrador' };
 
-  // El gerente edita; asesor y admin solo consultan
-  const soloLectura = user.rol !== 'gerente';
+  // El gerente edita la semana en curso y las futuras; las pasadas son solo
+  // consulta. Asesor y admin siempre consultan.
+  const soloLectura = user.rol !== 'gerente' || weekOffset < 0;
 
   const [editCell, setEditCell] = useState(null); // { colId, dia }
 
@@ -4436,7 +4442,7 @@ function HorarioScreen() {
     setState({ ...state, horarios: { ...state.horarios, [horKey]: nuevo } });
     addAuditLog({ modulo: 'horario', accion: 'guardar', entidad: horKey,
       valorAnterior: null, valorNuevo: { weekId: proxWeekId } });
-    toast('Horario de la próxima semana guardado.');
+    toast('Horario guardado.');
   }
 
   if (!sucursal) return (
@@ -4467,10 +4473,15 @@ function HorarioScreen() {
   return (
     <>
       <TopBar
-        title={user.rol === 'gerente' ? 'Horario de la próxima semana' : 'Horarios'}
-        subtitle={`${sucursal.nombre} · Semana ${proxWeekId} · ${fmtFechaCorta(proxMonday)} – ${fmtFechaCorta(addDays(proxMonday,6))}`}
+        title="Horarios"
+        subtitle={`${sucursal.nombre} · ${esActual ? 'Semana en curso' : esProxima ? 'Próxima semana' : esPasada ? 'Semana anterior' : 'Semana futura'} · ${fmtFechaCorta(proxMonday)} – ${fmtFechaCorta(addDays(proxMonday,6))}`}
         actions={
           <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1">
+              <button onClick={() => setWeekOffset(weekOffset - 1)} className="btn btn-secondary">← Anterior</button>
+              <button onClick={() => setWeekOffset(0)} className="btn btn-secondary" disabled={esActual}>Hoy</button>
+              <button onClick={() => setWeekOffset(weekOffset + 1)} className="btn btn-secondary">Siguiente →</button>
+            </div>
             {horario.estado === 'definido' && <span className="badge badge-aprobada">Definido</span>}
             {horario.estado === 'borrador' && <span className="badge badge-borrador">Borrador</span>}
             {sucursalesDisp.length > 1 && (
@@ -4485,12 +4496,20 @@ function HorarioScreen() {
       <div className="p-6">
         {soloLectura && (
           <div className="mb-4 p-3 rounded-lg border bg-blue-50 text-sm" style={{borderColor:'#ABCAE9', color:'#0F4471'}}>
-            Vista de consulta. El horario lo define el gerente de la sucursal.
+            {user.rol === 'gerente'
+              ? 'Las semanas anteriores son solo de consulta y no se pueden editar.'
+              : 'Vista de consulta. El horario lo define el gerente de la sucursal.'}
           </div>
         )}
         <div className="mb-4 p-3 rounded-lg" style={{background:'var(--lem-light)'}}>
           <div className="text-[13px]" style={{color:'var(--lem-dark)'}}>
-            Este horario es para la <strong>próxima semana</strong>. Cuando inicie esa semana, la captura de pre-nómina se pre-llenará automáticamente: turno → A, descanso → D.
+            {esProxima
+              ? <>Este horario es para la <strong>próxima semana</strong>. Cuando inicie esa semana, la captura de pre-nómina se pre-llenará automáticamente: turno → A, descanso → D.</>
+              : esActual
+              ? <>Estás viendo el horario de la <strong>semana en curso</strong>.</>
+              : esPasada
+              ? <>Estás viendo el horario de una <strong>semana anterior</strong> (solo consulta).</>
+              : <>Estás viendo el horario de una <strong>semana futura</strong>.</>}
           </div>
         </div>
 
