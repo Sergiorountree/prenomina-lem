@@ -1102,11 +1102,25 @@ function calcularNominaColab(colab, detalleDias) {
   const pierdeBono = conteo.FI > 0 || conteo.PSGS > 0;
   const montoBono = pierdeBono ? 0 : bonoSemanal;
 
-  const total = montoSueldo + montoBono;
+  // --- HORAS EXTRAS ---
+  // El gerente captura las horas; Contabilidad/Admin aprueban el monto en el
+  // módulo de Horas extras. Solo se paga lo aprobado. El monto en pesos se
+  // calcula aquí (donde se ve el sueldo); en el documento solo se guarda la opción.
+  const horasExtras = detalleDias?.horasExtras || 0;
+  let montoHE = 0;
+  if (detalleDias?.heAprobada) {
+    const op = detalleDias.heOpcion;
+    if (op === '1') montoHE = Math.round((sueldo / 8) * horasExtras * 100) / 100;
+    else if (op === '2') montoHE = Math.round((sueldo / 8) * horasExtras * 2 * 100) / 100;
+    else if (op === '3') montoHE = detalleDias.heMonto3 || 0;
+  }
+
+  const total = montoSueldo + montoBono + montoHE;
 
   return {
     conteo, diasCubiertos, descansoPagado, primaDominical, trabajoDomingo,
-    diasBase, diasPagados, sueldo, bonoSemanal, montoSueldo, montoBono, pierdeBono, total,
+    diasBase, diasPagados, sueldo, bonoSemanal, montoSueldo, montoBono, pierdeBono,
+    horasExtras, montoHE, heAprobada: !!detalleDias?.heAprobada, total,
   };
 }
 
@@ -1444,6 +1458,7 @@ function Sidebar({ user, view, setView }) {
       { key: 'sucursales', icon: 'home',     label: 'Sucursales' },
       { key: 'movimientos',icon: 'moveH',    label: 'Movimientos' },
       { key: 'nomina',     icon: 'money',    label: 'Nómina semanal' },
+      { key: 'horasextras',icon: 'money',    label: 'Horas extras' },
       { key: 'bajas',      icon: 'logout',   label: 'Bajas' },
       { key: 'reportes',   icon: 'file',     label: 'Reportes' },
       { key: 'bonos',      icon: 'gift',     label: 'Bonos' },
@@ -1479,7 +1494,6 @@ function Sidebar({ user, view, setView }) {
       { key: 'movimientos', icon: 'moveH',   label: 'Movimientos' },
       { key: 'vacaciones',  icon: 'calendar',label: 'Vacaciones' },
       { key: 'bajas',       icon: 'logout',  label: 'Bajas' },
-      { key: 'horasextras', icon: 'money',   label: 'Horas extras' },
     ],
     gerente: [
       { key: 'dashboard',   icon: 'home',    label: 'Inicio' },
@@ -6092,6 +6106,169 @@ const cellHead = { textAlign: 'left', padding: '7px 8px', borderBottom: '1.5px s
 const cell = { padding: '6px 8px', borderBottom: '1px solid #e5e5e5', verticalAlign: 'top' };
 
 /* ========================================================================
+   HORAS EXTRAS — aprobación de HE reportadas (Contabilidad / Admin)
+   ======================================================================== */
+function HorasExtrasScreen() {
+  const { user, state, setState, addAuditLog, toast } = useApp();
+  const verSueldos = user.rol === 'admin' || user.rol === 'contabilidad';
+
+  const semanas = useMemo(() => {
+    const set = {};
+    Object.values(state.prenominas).forEach(p => {
+      if (!set[p.weekId]) set[p.weekId] = { weekId: p.weekId, inicio: p.semanaInicio, fin: p.semanaFin };
+    });
+    return Object.values(set).sort((a, b) => (a.inicio < b.inicio ? 1 : -1));
+  }, [state.prenominas]);
+
+  const [weekId, setWeekId] = useState(semanas[0]?.weekId || '');
+  const [montos3, setMontos3] = useState({});
+
+  if (!verSueldos) {
+    return (<><TopBar title="Horas extras" subtitle="Aprobación de horas extras" />
+      <div className="p-8"><div className="bg-white rounded-xl p-8 text-center text-sm text-gray-500 shadow-card">
+        Este módulo solo está disponible para Contabilidad y Administración.</div></div></>);
+  }
+  if (semanas.length === 0) {
+    return (<><TopBar title="Horas extras" subtitle="Aprobación de horas extras" />
+      <div className="p-8"><div className="bg-white rounded-xl p-8 text-center text-sm text-gray-500 shadow-card">
+        Aún no hay pre-nóminas capturadas.</div></div></>);
+  }
+
+  const sucursales = state.sucursales || SEED.sucursales;
+  const filas = [];
+  sucursales.forEach(suc => {
+    const preKey = suc.id + '_' + weekId;
+    const pre = state.prenominas[preKey];
+    if (!pre || !pre.detalle) return;
+    Object.keys(pre.detalle).forEach(colabId => {
+      const det = pre.detalle[colabId];
+      const he = det?.horasExtras || 0;
+      if (he <= 0) return;
+      const colab = state.colaboradores.find(c => c.id === colabId);
+      if (!colab) return;
+      filas.push({ suc, colab, det, he, preKey });
+    });
+  });
+
+  function actualizar(preKey, colabId, patch) {
+    const pre = state.prenominas[preKey];
+    const newPre = { ...pre, detalle: { ...pre.detalle, [colabId]: { ...pre.detalle[colabId], ...patch } } };
+    setState({ ...state, prenominas: { ...state.prenominas, [preKey]: newPre } });
+  }
+  function aprobar(fila, opcion) {
+    const monto3 = parseFloat(montos3[fila.colab.id]);
+    if (opcion === '3' && (!monto3 || monto3 <= 0)) { toast('Captura el monto de la opción 3.'); return; }
+    actualizar(fila.preKey, fila.colab.id, { heOpcion: opcion, heAprobada: true, heAprobadoPor: user.id, heMonto3: opcion === '3' ? monto3 : 0 });
+    addAuditLog({ modulo: 'horasextras', accion: 'aprobar', entidad: fila.preKey + ':' + fila.colab.id, valorAnterior: null, valorNuevo: { opcion, horas: fila.he } });
+    toast('Horas extras aprobadas.');
+  }
+  function quitar(fila) {
+    actualizar(fila.preKey, fila.colab.id, { heAprobada: false });
+    addAuditLog({ modulo: 'horasextras', accion: 'rechazar', entidad: fila.preKey + ':' + fila.colab.id, valorAnterior: null, valorNuevo: { horas: fila.he } });
+    toast('Aprobación retirada.');
+  }
+  const op1 = (c, he) => Math.round((c.sueldoDiario || 0) / 8 * he * 100) / 100;
+  const op2 = (c, he) => Math.round((c.sueldoDiario || 0) / 8 * he * 2 * 100) / 100;
+  const fmtM = n => '$' + n.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const pendientes = filas.filter(f => !f.det.heAprobada).length;
+
+  return (
+    <>
+      <TopBar title="Horas extras" subtitle="Aprobación de horas extras reportadas por el gerente" />
+      <div className="p-8">
+        <div className="flex flex-wrap items-end gap-3 mb-6">
+          <div>
+            <label className="text-[11px] uppercase tracking-wider text-gray-500 font-medium mb-1 block">Semana</label>
+            <select value={weekId} onChange={e => setWeekId(e.target.value)}
+              className="px-3 py-2.5 rounded-lg border text-sm bg-white" style={{ borderColor: 'var(--border-strong)', minWidth: 280 }}>
+              {semanas.map(s => <option key={s.weekId} value={s.weekId}>Semana {s.weekId} · {fmtFecha(parseLocalDate(s.inicio))} – {fmtFecha(parseLocalDate(s.fin))}</option>)}
+            </select>
+          </div>
+          <div className="flex-1" />
+          <div className="text-sm text-gray-500">{filas.length} con horas extras · {pendientes} por aprobar</div>
+        </div>
+
+        {filas.length === 0 ? (
+          <div className="bg-white rounded-xl p-8 text-center text-sm text-gray-500 shadow-card">
+            No hay horas extras capturadas en esta semana. El gerente las registra en la columna HE de la pre-nómina.
+          </div>
+        ) : (
+          <div className="bg-white rounded-xl shadow-card overflow-x-auto">
+            <table className="lem-table w-full" style={{ minWidth: 980 }}>
+              <thead><tr>
+                <th>Colaborador</th>
+                <th className="text-center">Horas</th>
+                <th className="text-right">Opción 1<div className="text-[10px] font-normal text-gray-400 normal-case">sueldo/8 × h</div></th>
+                <th className="text-right">Opción 2<div className="text-[10px] font-normal text-gray-400 normal-case">hora al doble</div></th>
+                <th style={{ minWidth: 150 }}>Opción 3<div className="text-[10px] font-normal text-gray-400 normal-case">monto libre</div></th>
+                <th className="text-center">Estado</th>
+                <th style={{ minWidth: 180 }}>Observación del gerente</th>
+              </tr></thead>
+              <tbody>
+                {filas.map(fila => {
+                  const { colab, suc, he, det } = fila;
+                  const un = SEED.unidades.find(u => u.id === suc.unId);
+                  const m1 = op1(colab, he), m2 = op2(colab, he);
+                  const aprobada = !!det.heAprobada;
+                  const sel = det.heOpcion;
+                  const btnOp = (opcion, label) => (
+                    <button onClick={() => aprobar(fila, opcion)}
+                      className="px-2.5 py-1.5 rounded-lg text-sm font-medium num"
+                      style={aprobada && sel === opcion
+                        ? { background: 'var(--lem)', color: 'white' }
+                        : { background: 'var(--bg)', border: '1px solid var(--border-strong)', color: 'var(--text)' }}>
+                      {label}
+                    </button>
+                  );
+                  return (
+                    <tr key={fila.preKey + ':' + colab.id} style={aprobada ? { background: '#F2FAF6' } : {}}>
+                      <td>
+                        <div className="flex items-center gap-2">
+                          <span className="brand-dot" style={{ background: un?.color }} />
+                          <div>
+                            <div className="font-medium text-sm">{colab.nombre} {colab.apellidoPaterno}</div>
+                            <div className="text-[11px] text-gray-500">{suc.nombre}</div>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="text-center num font-medium">{he}</td>
+                      <td className="text-right">{btnOp('1', fmtM(m1))}</td>
+                      <td className="text-right">{btnOp('2', fmtM(m2))}</td>
+                      <td>
+                        <div className="flex items-center gap-1.5">
+                          <input type="number" min="0" step="0.01" placeholder="0.00"
+                            value={montos3[colab.id] ?? (sel === '3' ? det.heMonto3 : '')}
+                            onChange={e => setMontos3(p => ({ ...p, [colab.id]: e.target.value }))}
+                            className="w-24 num text-sm py-1.5 px-2 rounded border" style={{ borderColor: 'var(--border-strong)' }} />
+                          <button onClick={() => aprobar(fila, '3')}
+                            className="px-2 py-1.5 rounded-lg text-xs font-medium"
+                            style={aprobada && sel === '3' ? { background: 'var(--lem)', color: 'white' } : { background: 'var(--bg)', border: '1px solid var(--border-strong)' }}>
+                            Usar
+                          </button>
+                        </div>
+                      </td>
+                      <td className="text-center">
+                        {aprobada
+                          ? <div className="flex flex-col items-center gap-1">
+                              <span className="badge badge-aprobada">Aprobada · Op {sel}</span>
+                              <button onClick={() => quitar(fila)} className="text-[11px] text-gray-500 underline">Quitar</button>
+                            </div>
+                          : <span className="badge badge-borrador">Pendiente</span>}
+                      </td>
+                      <td className="text-sm text-gray-600">{det.observacion || <span className="text-gray-300">—</span>}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+/* ========================================================================
    NÓMINA SEMANAL — cálculo de percepciones por sucursal y empleado
    ======================================================================== */
 function NominaSemanalScreen() {
@@ -6171,6 +6348,8 @@ function NominaSemanalScreen() {
           'Monto sueldo': calc.montoSueldo,
           'Bono semanal': calc.bonoSemanal,
           'Bono pagado': calc.montoBono,
+          'Horas extras (h)': calc.horasExtras,
+          'Monto horas extras': calc.montoHE,
           'Total semana': calc.total,
         });
       });
@@ -6248,6 +6427,7 @@ function NominaSemanalScreen() {
                           <th className="text-center" title="Días pagados totales">Días pag.</th>
                           <th className="text-right">Monto sueldo</th>
                           <th className="text-right">Bono</th>
+                          <th className="text-right">H. Extra</th>
                           <th className="text-right">Total</th>
                         </tr></thead>
                         <tbody>
@@ -6271,6 +6451,11 @@ function NominaSemanalScreen() {
                                   {calc.bonoSemanal === 0 ? '—'
                                     : calc.pierdeBono ? <span title="Bono perdido por falta o permiso sin goce">$0 ✕</span>
                                     : '$' + calc.montoBono.toLocaleString('es-MX')}
+                                </td>
+                                <td className="text-right num">
+                                  {calc.horasExtras === 0 ? '—'
+                                    : calc.montoHE > 0 ? '$' + calc.montoHE.toLocaleString('es-MX')
+                                    : <span title="Horas reportadas, pendientes de aprobar en el módulo de Horas extras" style={{ color: '#9A3412' }}>{calc.horasExtras}h ⏳</span>}
                                 </td>
                                 <td className="text-right num font-semibold" style={{ color: 'var(--lem-dark)' }}>${calc.total.toLocaleString('es-MX')}</td>
                               </tr>
@@ -6967,12 +7152,7 @@ function App() {
     'Lista de colaboradores en riesgo',
     'No genera baja automática — solo alerta'
   ]} />;
-  else if (view === 'horasextras') body = <ComingSoon title="Horas extras" subtitle="Aprobación de HE reportadas" items={[
-    'Lista de HE pendientes por sucursal',
-    'Aprobación por Asesor o Contabilidad',
-    'HE no aprobadas pasan a la siguiente semana como ajuste',
-    'El sistema solo registra horas; el cálculo del pago es del módulo de nómina'
-  ]} />;
+  else if (view === 'horasextras') body = <HorasExtrasScreen />;
   else body = <ComingSoon title="Módulo" subtitle="" items={['Próximamente']} />;
 
   return (
