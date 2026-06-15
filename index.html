@@ -5145,8 +5145,8 @@ function BajasScreen() {
   const [tab, setTab] = useState(user.rol === 'gerente' ? 'solicitar' : 'aprobaciones');
 
   const tabs = [];
-  // Solicitar: gerente, asesor, rh
-  if (user.rol === 'gerente' || user.rol === 'asesor' || user.rol === 'rh') tabs.push({ key: 'solicitar', label: 'Solicitar baja' });
+  // Solicitar: gerente, asesor, rh, admin
+  if (user.rol === 'gerente' || user.rol === 'asesor' || user.rol === 'rh' || user.rol === 'admin') tabs.push({ key: 'solicitar', label: 'Solicitar baja' });
   // Aprobaciones: rh, contabilidad, admin
   if (user.rol === 'rh' || user.rol === 'contabilidad' || user.rol === 'admin') tabs.push({ key: 'aprobaciones', label: 'Aprobaciones' });
   tabs.push({ key: 'historial', label: 'Historial' });
