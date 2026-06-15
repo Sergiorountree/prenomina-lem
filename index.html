@@ -1244,6 +1244,7 @@ function addDays(d, n) {
   const r = new Date(d); r.setDate(r.getDate() + n); return r;
 }
 function dateKey(d) { return new Date(d).toISOString().slice(0,10); }
+function parseLocalDate(s) { const p = String(s).slice(0,10).split('-').map(Number); return new Date(p[0], (p[1]||1)-1, p[2]||1); }
 
 /* ========================================================================
    ICONS
@@ -3379,10 +3380,8 @@ function ColaboradorFicha({ colab, puedeVerSueldo, onClose }) {
 /* ========================================================================
    PRE-NÓMINA CAPTURE (the killer feature)
    ======================================================================== */
-function PrenominaCapture({ presetSucursalId }) {
+function PrenominaCapture({ presetSucursalId, presetWeekId }) {
   const { user, state, setState, addAuditLog, toast } = useApp();
-  const monday = getMonday();
-  const weekId = getWeekId(monday);
 
   // Sucursales disponibles para este usuario
   const sucursalesDisp = useMemo(() => {
@@ -3397,6 +3396,14 @@ function PrenominaCapture({ presetSucursalId }) {
 
   const [sucursalId, setSucursalId] = useState(presetSucursalId || sucursalesDisp[0]?.id || '');
   useEffect(() => { if (presetSucursalId) setSucursalId(presetSucursalId); }, [presetSucursalId]);
+
+  // Semana: si la pre-nómina viene de la bandeja/lista, respeta SU semana (no la
+  // actual). Así contabilidad puede aprobar pre-nóminas de semanas anteriores
+  // aunque ya haya cambiado el lunes.
+  const weekId = presetWeekId || getWeekId(getMonday());
+  const _preExistente = state.prenominas[sucursalId + '_' + weekId];
+  const monday = (_preExistente && _preExistente.semanaInicio)
+    ? parseLocalDate(_preExistente.semanaInicio) : getMonday();
 
   const sucursal = (state.sucursales || SEED.sucursales).find(s => s.id === sucursalId);
   const un = SEED.unidades.find(u => u.id === sucursal?.unId);
@@ -3943,7 +3950,7 @@ function PrenominasList({ inbox = false }) {
   else if (filter === 'aprobadas') lista = lista.filter(p => p.estado === 'aprobada' || p.estado === 'cerrada');
   else if (filter === 'rechazadas') lista = lista.filter(p => p.estado === 'rechazada');
 
-  if (view) return <PrenominaCapture presetSucursalId={view} />;
+  if (view) return <PrenominaCapture presetSucursalId={view.sucursalId} presetWeekId={view.weekId} />;
 
   return (
     <>
@@ -3987,7 +3994,7 @@ function PrenominasList({ inbox = false }) {
                       <td><Badge estado={p.estado} /></td>
                       <td className="text-sm text-gray-600">{p.fechaEnvio ? fmtFechaCorta(p.fechaEnvio) : (p.fechaCreacion ? fmtFechaCorta(p.fechaCreacion) : '—')}</td>
                       <td>
-                        <button onClick={() => setView(p.sucursalId)} className="btn btn-secondary">
+                        <button onClick={() => setView({ sucursalId: p.sucursalId, weekId: p.weekId })} className="btn btn-secondary">
                           {inbox && (p.estado === 'enviada' || p.estado === 'corregida') ? 'Revisar' : 'Abrir'} <Icon name="chevronR" size={14} />
                         </button>
                       </td>
