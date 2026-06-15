@@ -4152,7 +4152,7 @@ function countFIInMonth(state, colabId, anio, mes) {
   let count = 0;
   Object.values(state.prenominas).forEach(p => {
     if (p.detalle?.[colabId]) {
-      const monday = new Date(p.semanaInicio);
+      const monday = parseLocalDate(p.semanaInicio);
       for (let d = 0; d < 7; d++) {
         const fecha = addDays(monday, d);
         if (fecha.getFullYear() === anio && fecha.getMonth() === mes) {
@@ -6192,7 +6192,7 @@ function NominaSemanalScreen() {
             <select value={weekId} onChange={e => { setWeekId(e.target.value); setSucExpandida(null); }}
               className="px-3 py-2.5 rounded-lg border text-sm bg-white" style={{ borderColor: 'var(--border-strong)', minWidth: 280 }}>
               {semanas.map(s => (
-                <option key={s.weekId} value={s.weekId}>Semana {s.weekId} · {fmtFecha(new Date(s.inicio))} – {fmtFecha(new Date(s.fin))}</option>
+                <option key={s.weekId} value={s.weekId}>Semana {s.weekId} · {fmtFecha(parseLocalDate(s.inicio))} – {fmtFecha(parseLocalDate(s.fin))}</option>
               ))}
             </select>
           </div>
