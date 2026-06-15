@@ -3652,8 +3652,8 @@ function PrenominaCapture({ presetSucursalId, presetWeekId }) {
                 </button>
               </>
             )}
-            {/* Acciones de contabilidad */}
-            {user.rol === 'contabilidad' && (prenomina.estado === 'enviada' || prenomina.estado === 'corregida') && (
+            {/* Acciones de contabilidad y administrador */}
+            {(user.rol === 'contabilidad' || user.rol === 'admin') && (prenomina.estado === 'enviada' || prenomina.estado === 'corregida') && (
               <>
                 <button className="btn btn-danger" onClick={() => setRejectModal(true)}><Icon name="x" size={14}/>Rechazar</button>
                 <button className="btn btn-success" onClick={aprobar}><Icon name="check" size={14}/>Aprobar y cerrar</button>
