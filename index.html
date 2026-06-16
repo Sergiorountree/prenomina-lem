@@ -4914,12 +4914,7 @@ function VacSolicitar() {
         <div className="space-y-4">
           <div>
             <label className="text-[11px] uppercase tracking-wider text-gray-500 font-medium mb-1 block">Colaborador</label>
-            <select value={colabId} onChange={e => { setColabId(e.target.value); setError(''); }}
-              className="w-full px-3 py-2.5 rounded-lg border text-sm bg-white" style={{ borderColor: 'var(--border-strong)' }}>
-              {gestionables.map(c => (
-                <option key={c.id} value={c.id}>{c.nombre} {c.apellidoPaterno} {c.apellidoMaterno}</option>
-              ))}
-            </select>
+            <ColaboradorBuscador candidatos={gestionables} value={colabId} onChange={id => { setColabId(id); setError(''); }} />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -5233,6 +5228,42 @@ function BajasScreen() {
   );
 }
 
+/* Selector de colaborador con búsqueda por nombre (combobox). */
+function ColaboradorBuscador({ candidatos, value, onChange, placeholder }) {
+  const [q, setQ] = useState('');
+  const [open, setOpen] = useState(false);
+  const sel = candidatos.find(c => c.id === value);
+  const nombreSel = sel ? `${sel.nombre} ${sel.apellidoPaterno} ${sel.apellidoMaterno || ''}`.trim() : '';
+  const filtro = (q || '').toLowerCase().trim();
+  const lista = (filtro
+    ? candidatos.filter(c => `${c.nombre} ${c.apellidoPaterno} ${c.apellidoMaterno || ''}`.toLowerCase().includes(filtro))
+    : candidatos).slice(0, 60);
+  return (
+    <div style={{ position: 'relative' }}>
+      <input
+        value={open ? q : nombreSel}
+        placeholder={placeholder || 'Escribe el nombre para buscar…'}
+        onFocus={() => { setOpen(true); setQ(''); }}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        onChange={e => { setQ(e.target.value); setOpen(true); }}
+        className="w-full px-3 py-2.5 rounded-lg border text-sm bg-white"
+        style={{ borderColor: 'var(--border-strong)' }} />
+      {open && (
+        <div style={{ position: 'absolute', zIndex: 60, left: 0, right: 0, top: '100%', marginTop: 4, background: 'white', border: '1px solid var(--border-strong)', borderRadius: 8, maxHeight: 260, overflowY: 'auto', boxShadow: '0 8px 24px rgba(0,0,0,.12)' }}>
+          {lista.length === 0
+            ? <div className="px-3 py-2 text-sm text-gray-400">Sin resultados</div>
+            : lista.map(c => (
+              <div key={c.id} onMouseDown={() => { onChange(c.id); setOpen(false); setQ(''); }}
+                className="px-3 py-2 text-sm hover:bg-gray-50" style={{ cursor: 'pointer', background: c.id === value ? 'var(--lem-light)' : 'white' }}>
+                {c.nombre} {c.apellidoPaterno} {c.apellidoMaterno || ''}
+              </div>
+            ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* --- Pestaña: Solicitar baja --- */
 function BajaSolicitar() {
   const { user, state, setState, addAuditLog, toast } = useApp();
@@ -5300,13 +5331,7 @@ function BajaSolicitar() {
       <div className="space-y-4">
         <div>
           <label className="text-[11px] uppercase tracking-wider text-gray-500 font-medium mb-1 block">Colaborador</label>
-          <select value={colabId} onChange={e => { setColabId(e.target.value); setError(''); }}
-            className="w-full px-3 py-2.5 rounded-lg border text-sm bg-white" style={{ borderColor: 'var(--border-strong)' }}>
-            <option value="">Selecciona...</option>
-            {candidatos.map(c => (
-              <option key={c.id} value={c.id}>{c.nombre} {c.apellidoPaterno} {c.apellidoMaterno}</option>
-            ))}
-          </select>
+          <ColaboradorBuscador candidatos={candidatos} value={colabId} onChange={id => { setColabId(id); setError(''); }} />
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div>
@@ -5659,11 +5684,7 @@ function MovSolicitar() {
       <div className="space-y-4">
         <div>
           <label className="text-[11px] uppercase tracking-wider text-gray-500 font-medium mb-1 block">Colaborador</label>
-          <select value={colabId} onChange={e => { setColabId(e.target.value); setError(''); }}
-            className="w-full px-3 py-2.5 rounded-lg border text-sm bg-white" style={{ borderColor: 'var(--border-strong)' }}>
-            <option value="">Selecciona...</option>
-            {candidatos.map(c => <option key={c.id} value={c.id}>{c.nombre} {c.apellidoPaterno} {c.apellidoMaterno}</option>)}
-          </select>
+          <ColaboradorBuscador candidatos={candidatos} value={colabId} onChange={id => { setColabId(id); setError(''); }} />
         </div>
 
         {colab && (
