@@ -595,12 +595,12 @@ async function fsImportarColaboradores(nuevos, verSueldos) {
     const lote = nuevos.slice(i, i + 200);
     const batch = db.batch();
     lote.forEach(c => {
-      const { sueldoDiario, bonoTransporte, ...publico } = c;
+      const { sueldoDiario, bonoTransporte, deducciones, ...publico } = c;
       const ref = db.collection('colaboradores').doc(c.id);
       batch.set(ref, publico, { merge: true });
       if (verSueldos) {
         batch.set(ref.collection('privado').doc('compensacion'),
-          { sueldoDiario: sueldoDiario || 0, bonoTransporte: bonoTransporte || 0 }, { merge: true });
+          { sueldoDiario: sueldoDiario || 0, bonoTransporte: bonoTransporte || 0, deducciones: deducciones || [] }, { merge: true });
       }
     });
     await batch.commit();
@@ -623,7 +623,7 @@ async function fsCargarColaboradores(rol, email, verSueldos, sucursalesUsuario) 
   if (verSueldos) {
     await Promise.all(colabs.map(async c => {
       const p = await db.collection('colaboradores').doc(c.id).collection('privado').doc('compensacion').get();
-      if (p.exists) { c.sueldoDiario = p.data().sueldoDiario; c.bonoTransporte = p.data().bonoTransporte; }
+      if (p.exists) { c.sueldoDiario = p.data().sueldoDiario; c.bonoTransporte = p.data().bonoTransporte; c.deducciones = p.data().deducciones || []; }
     }));
   }
   return colabs;
@@ -632,9 +632,9 @@ async function fsCargarColaboradores(rol, email, verSueldos, sucursalesUsuario) 
 var _colabSync = {};        // id -> { pub, comp } ya sincronizado con Firestore
 var _fsInicializado = false; // true cuando ya se cargaron los colaboradores de Firestore
 function _marcarSyncColab(c, verSueldos) {
-  var pub = Object.assign({}, c); delete pub.sueldoDiario; delete pub.bonoTransporte;
+  var pub = Object.assign({}, c); delete pub.sueldoDiario; delete pub.bonoTransporte; delete pub.deducciones;
   _colabSync[c.id] = { pub: JSON.stringify(pub),
-    comp: verSueldos ? ((c.sueldoDiario||0) + '|' + (c.bonoTransporte||0)) : null };
+    comp: verSueldos ? ((c.sueldoDiario||0) + '|' + (c.bonoTransporte||0) + '|' + JSON.stringify(c.deducciones||[])) : null };
 }
 // Espera a que Firebase Auth restaure la sesión tras recargar (evita permission-denied prematuro).
 function esperarAuthFirebase(timeoutMs) {
@@ -1119,10 +1119,18 @@ function calcularNominaColab(colab, detalleDias) {
 
   const total = montoSueldo + montoBono + montoHE;
 
+  // --- DEDUCCIONES (crédito empresa, FONACOT, INFONAVIT, etc.) ---
+  // Monto fijo semanal por deducción activa. Info financiera protegida:
+  // viven en la compensación privada (solo Admin/Contabilidad las cargan).
+  const deducciones = (colab.deducciones || [])
+    .filter(d => d && d.activa !== false)
+    .reduce((s, d) => s + (parseFloat(d.monto) || 0), 0);
+  const neto = Math.round((total - deducciones) * 100) / 100;
+
   return {
     conteo, diasCubiertos, descansoPagado, primaDominical, trabajoDomingo,
     diasBase, diasPagados, sueldo, bonoSemanal, montoSueldo, montoBono, pierdeBono,
-    horasExtras, montoHE, heAprobada: !!detalleDias?.heAprobada, total,
+    horasExtras, montoHE, heAprobada: !!detalleDias?.heAprobada, total, deducciones, neto,
   };
 }
 
@@ -3227,8 +3235,12 @@ function ColaboradorFicha({ colab, puedeVerSueldo, onClose }) {
     fechaNacimiento: colab.fechaNacimiento || '', telefono: colab.telefono || '', correo: colab.correo || '',
     sucursalId: colab.sucursalId || '', puestoId: colab.puestoId || '', fechaIngreso: colab.fechaIngreso || '',
     sueldoDiario: colab.sueldoDiario ?? '', bonoTransporte: colab.bonoTransporte ?? '',
+    deducciones: (colab.deducciones || []).map(d => ({ ...d })),
   }));
   const setF = (k, v) => setForm(p => ({ ...p, [k]: v }));
+  const addDeduccion = () => setForm(p => ({ ...p, deducciones: [...(p.deducciones || []), { id: 'ded_' + Date.now().toString(36), tipo: 'INFONAVIT', descripcion: '', monto: '', activa: true }] }));
+  const setDeduccion = (i, k, v) => setForm(p => { const arr = [...(p.deducciones || [])]; arr[i] = { ...arr[i], [k]: v }; return { ...p, deducciones: arr }; });
+  const delDeduccion = (i) => setForm(p => ({ ...p, deducciones: (p.deducciones || []).filter((_, j) => j !== i) }));
   const _inp = { width:'100%', border:'1px solid var(--border)', borderRadius:8, padding:'8px 10px', marginTop:4, fontSize:13, color:'#2b2b33' };
   const _lbl = { fontSize:11, color:'#6b6b76', display:'block', textTransform:'uppercase', letterSpacing:'.04em' };
   function guardarEdicion() {
@@ -3243,6 +3255,9 @@ function ColaboradorFicha({ colab, puedeVerSueldo, onClose }) {
     if (verSueldos) {
       patch.sueldoDiario = parseFloat(form.sueldoDiario) || 0;
       patch.bonoTransporte = parseFloat(form.bonoTransporte) || 0;
+      patch.deducciones = (form.deducciones || [])
+        .filter(d => (d.descripcion || '').trim() || parseFloat(d.monto) > 0)
+        .map(d => ({ id: d.id || 'ded_' + Math.random().toString(36).slice(2), tipo: d.tipo || 'Otro', descripcion: (d.descripcion || '').trim(), monto: parseFloat(d.monto) || 0, activa: d.activa !== false }));
     }
     setState({ ...state, colaboradores: state.colaboradores.map(c => c.id === colab.id ? { ...c, ...patch } : c) });
     addAuditLog({ modulo: 'colaboradores', accion: 'editar', entidad: colab.id,
@@ -3371,7 +3386,8 @@ function ColaboradorFicha({ colab, puedeVerSueldo, onClose }) {
         </div>)}
 
         {editando && (
-          <div className="p-6 grid grid-cols-2 gap-3">
+          <div className="p-6 space-y-4">
+            <div className="grid grid-cols-2 gap-3">
             <label style={_lbl}>Nombre(s)<input style={_inp} value={form.nombre} onChange={e => setF('nombre', e.target.value)} /></label>
             <label style={_lbl}>Apellido paterno<input style={_inp} value={form.apellidoPaterno} onChange={e => setF('apellidoPaterno', e.target.value)} /></label>
             <label style={_lbl}>Apellido materno<input style={_inp} value={form.apellidoMaterno} onChange={e => setF('apellidoMaterno', e.target.value)} /></label>
@@ -3388,6 +3404,32 @@ function ColaboradorFicha({ colab, puedeVerSueldo, onClose }) {
               {SEED.puestos.map(p => <option key={p.id} value={p.id}>{p.nombre}</option>)}</select></label>
             {verSueldos && <label style={_lbl}>Sueldo diario<input type="number" min="0" step="0.01" style={_inp} value={form.sueldoDiario} onChange={e => setF('sueldoDiario', e.target.value)} /></label>}
             {verSueldos && <label style={_lbl}>Bono semanal (transporte)<input type="number" min="0" step="0.01" style={_inp} value={form.bonoTransporte} onChange={e => setF('bonoTransporte', e.target.value)} /></label>}
+            </div>
+            {verSueldos && (
+              <div style={{ borderTop: '1px solid var(--border)', paddingTop: 14 }}>
+                <div className="flex items-center justify-between mb-2">
+                  <div style={{ ..._lbl, marginBottom: 0 }}>Deducciones semanales (FONACOT, INFONAVIT, crédito empresa…)</div>
+                  <button onClick={addDeduccion} className="btn btn-secondary" style={{ fontSize: 12, padding: '4px 10px' }}>+ Agregar</button>
+                </div>
+                {(form.deducciones || []).length === 0
+                  ? <div className="text-xs text-gray-400">Sin deducciones. Lo que agregues aquí se resta del neto en cada nómina semanal.</div>
+                  : <div className="space-y-2">
+                      {(form.deducciones || []).map((d, i) => (
+                        <div key={d.id || i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <select value={d.tipo || 'Otro'} onChange={e => setDeduccion(i, 'tipo', e.target.value)} style={{ ..._inp, marginTop: 0, width: 150 }}>
+                            {['Crédito empresa', 'FONACOT', 'INFONAVIT', 'Otro'].map(t => <option key={t} value={t}>{t}</option>)}
+                          </select>
+                          <input placeholder="Descripción / referencia" value={d.descripcion || ''} onChange={e => setDeduccion(i, 'descripcion', e.target.value)} style={{ ..._inp, marginTop: 0, flex: 1 }} />
+                          <input type="number" min="0" step="0.01" placeholder="$/sem" value={d.monto ?? ''} onChange={e => setDeduccion(i, 'monto', e.target.value)} style={{ ..._inp, marginTop: 0, width: 100 }} />
+                          <label style={{ fontSize: 12, color: '#6b6b76', display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}>
+                            <input type="checkbox" checked={d.activa !== false} onChange={e => setDeduccion(i, 'activa', e.target.checked)} /> Activa
+                          </label>
+                          <button onClick={() => delDeduccion(i)} style={{ color: '#9ca3af', fontSize: 16, padding: '0 4px' }} title="Quitar">✕</button>
+                        </div>
+                      ))}
+                    </div>}
+              </div>
+            )}
           </div>
         )}
 
@@ -6325,7 +6367,7 @@ function NominaSemanalScreen() {
       const calc = calcularNominaColab(c, detalleDias);
       if (calc.diasPagados === 0 && calc.conteo.FI === 0 && calc.conteo.INC === 0 && calc.conteo.PSGS === 0) return; // sin datos
       empleados.push({ colab: c, calc });
-      totalSuc += calc.total;
+      totalSuc += calc.neto;
     });
     if (empleados.length === 0) return;
     const un = SEED.unidades.find(u => u.id === suc.unId);
@@ -6358,7 +6400,9 @@ function NominaSemanalScreen() {
           'Bono pagado': calc.montoBono,
           'Horas extras (h)': calc.horasExtras,
           'Monto horas extras': calc.montoHE,
-          'Total semana': calc.total,
+          'Percepciones': calc.total,
+          'Deducciones': calc.deducciones,
+          'Neto a pagar': calc.neto,
         });
       });
     });
@@ -6436,7 +6480,9 @@ function NominaSemanalScreen() {
                           <th className="text-right">Monto sueldo</th>
                           <th className="text-right">Bono</th>
                           <th className="text-right">H. Extra</th>
-                          <th className="text-right">Total</th>
+                          <th className="text-right">Percepciones</th>
+                          <th className="text-right">Deducc.</th>
+                          <th className="text-right">Neto</th>
                         </tr></thead>
                         <tbody>
                           {empleados.map(({ colab, calc }) => {
@@ -6465,7 +6511,9 @@ function NominaSemanalScreen() {
                                     : calc.montoHE > 0 ? '$' + calc.montoHE.toLocaleString('es-MX')
                                     : <span title="Horas reportadas, pendientes de aprobar en el módulo de Horas extras" style={{ color: '#9A3412' }}>{calc.horasExtras}h ⏳</span>}
                                 </td>
-                                <td className="text-right num font-semibold" style={{ color: 'var(--lem-dark)' }}>${calc.total.toLocaleString('es-MX')}</td>
+                                <td className="text-right num">${calc.total.toLocaleString('es-MX')}</td>
+                                <td className="text-right num" style={calc.deducciones > 0 ? { color: '#8C1F1B' } : {}}>{calc.deducciones > 0 ? '-$' + calc.deducciones.toLocaleString('es-MX') : '—'}</td>
+                                <td className="text-right num font-semibold" style={{ color: 'var(--lem-dark)' }}>${calc.neto.toLocaleString('es-MX')}</td>
                               </tr>
                             );
                           })}
@@ -7063,12 +7111,12 @@ function App() {
     const verSueldos = user.rol === 'admin' || user.rol === 'contabilidad';
     const cambios = [];
     (state.colaboradores || []).forEach(c => {
-      const pub = Object.assign({}, c); delete pub.sueldoDiario; delete pub.bonoTransporte;
+      const pub = Object.assign({}, c); delete pub.sueldoDiario; delete pub.bonoTransporte; delete pub.deducciones;
       const pubKey = JSON.stringify(pub);
-      const compKey = verSueldos ? ((c.sueldoDiario||0) + '|' + (c.bonoTransporte||0)) : null;
+      const compKey = verSueldos ? ((c.sueldoDiario||0) + '|' + (c.bonoTransporte||0) + '|' + JSON.stringify(c.deducciones||[])) : null;
       const prev = _colabSync[c.id];
       if (!prev || prev.pub !== pubKey || (verSueldos && prev.comp !== compKey)) {
-        cambios.push({ id: c.id, pub, sd: c.sueldoDiario, bo: c.bonoTransporte,
+        cambios.push({ id: c.id, pub, sd: c.sueldoDiario, bo: c.bonoTransporte, ded: c.deducciones || [],
           pc: !prev || prev.pub !== pubKey, cc: verSueldos && (!prev || prev.comp !== compKey) });
         _colabSync[c.id] = { pub: pubKey, comp: compKey };
       }
@@ -7082,7 +7130,7 @@ function App() {
           const r = db.collection('colaboradores').doc(x.id);
           if (x.pc) batch.set(r, x.pub, { merge: true });
           if (x.cc) batch.set(r.collection('privado').doc('compensacion'),
-            { sueldoDiario: x.sd || 0, bonoTransporte: x.bo || 0 }, { merge: true });
+            { sueldoDiario: x.sd || 0, bonoTransporte: x.bo || 0, deducciones: x.ded || [] }, { merge: true });
         });
         try { await batch.commit(); } catch (e) { console.error('Guardar colaboradores Firestore:', e); }
       }
