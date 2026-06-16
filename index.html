@@ -1106,7 +1106,9 @@ function calcularNominaColab(colab, detalleDias) {
   // El gerente captura las horas; Contabilidad/Admin aprueban el monto en el
   // módulo de Horas extras. Solo se paga lo aprobado. El monto en pesos se
   // calcula aquí (donde se ve el sueldo); en el documento solo se guarda la opción.
-  const horasExtras = detalleDias?.horasExtras || 0;
+  // Regla: si trabajó los 7 días (7 asistencias) se acreditan 8 horas extra
+  // automáticas, que se SUMAN a las que haya capturado el gerente.
+  const horasExtras = (detalleDias?.horasExtras || 0) + (conteo.A === 7 ? 8 : 0);
   let montoHE = 0;
   if (detalleDias?.heAprobada) {
     const op = detalleDias.heOpcion;
@@ -6142,11 +6144,14 @@ function HorasExtrasScreen() {
     if (!pre || !pre.detalle) return;
     Object.keys(pre.detalle).forEach(colabId => {
       const det = pre.detalle[colabId];
-      const he = det?.horasExtras || 0;
+      let aCount = 0; for (let d = 0; d < 7; d++) if (det?.[d]?.indicador === 'A') aCount++;
+      const auto = aCount === 7 ? 8 : 0;
+      const base = det?.horasExtras || 0;
+      const he = base + auto;
       if (he <= 0) return;
       const colab = state.colaboradores.find(c => c.id === colabId);
       if (!colab) return;
-      filas.push({ suc, colab, det, he, preKey });
+      filas.push({ suc, colab, det, he, base, auto, preKey });
     });
   });
 
@@ -6231,7 +6236,10 @@ function HorasExtrasScreen() {
                           </div>
                         </div>
                       </td>
-                      <td className="text-center num font-medium">{he}</td>
+                      <td className="text-center num font-medium">
+                        {he}
+                        {fila.auto > 0 && <div className="text-[10px] font-normal normal-case" style={{ color: 'var(--lem)' }}>incluye 8 auto · 7 días</div>}
+                      </td>
                       <td className="text-right">{btnOp('1', fmtM(m1))}</td>
                       <td className="text-right">{btnOp('2', fmtM(m2))}</td>
                       <td>
