@@ -1076,13 +1076,12 @@ function calcularNominaColab(colab, detalleDias) {
   const diasCubiertos = conteo.A + conteo.VAC + conteo.PCGS;
 
   // --- DESCANSO PAGADO ---
-  // Regla: se requieren al menos 5 días cubiertos para tener derecho a descanso.
-  // Con 5 o 6 días, se descuenta 1/6 del descanso por cada falta (FI).
-  // Con menos de 5 días cubiertos, no hay descanso pagado.
+  // Regla: el día de descanso (7º día) se paga PROPORCIONAL a los días cubiertos
+  // (A+VAC+PCGS) ÷ 6, para quien trabajó al menos 4 días. 6 días = descanso
+  // completo; 5 = 0.83; 4 = 0.67; menos de 4 días cubiertos = sin descanso.
   let factorDescanso = 0; // proporción del día de descanso que se paga (0 a 1)
-  if (conteo.D > 0 && diasCubiertos >= 5) {
-    const fraccionPerdida = conteo.FI / 6;
-    factorDescanso = Math.max(0, 1 - fraccionPerdida);
+  if (conteo.D > 0 && diasCubiertos >= 4) {
+    factorDescanso = Math.min(diasCubiertos, 6) / 6;
   }
   const descansoPagado = factorDescanso; // en "días" (puede ser fracción, ej. 0.833)
 
@@ -6532,7 +6531,7 @@ function NominaSemanalScreen() {
 
         {/* Nota de criterios */}
         <div className="text-[11px] text-gray-400 mt-5 leading-relaxed">
-          <strong>Criterios de cálculo:</strong> se pagan asistencias (A), vacaciones (VAC) y permisos con goce (PCGS). <strong>Prima dominical:</strong> el domingo trabajado se paga al 125%. <strong>Descanso:</strong> se requiere haber cubierto al menos 5 días; se descuenta 1/6 del descanso por cada falta (FI). <strong>Bono semanal fijo:</strong> se paga completo salvo que haya una falta (FI) o un permiso sin goce (PSGS); las vacaciones y el permiso con goce no afectan el bono. No se pagan FI, PSGS ni incapacidades (INC, las cubre el IMSS). Este cálculo es de percepciones; no incluye horas extras ni deducciones (ISR/IMSS), que se manejarán por separado.
+          <strong>Criterios de cálculo:</strong> se pagan asistencias (A), vacaciones (VAC) y permisos con goce (PCGS). <strong>Prima dominical:</strong> el domingo trabajado se paga al 125%. <strong>Descanso:</strong> el 7º día se paga proporcional a los días cubiertos ÷ 6 para quien trabajó al menos 4 días (6 días = completo, 5 = 0.83, 4 = 0.67; menos de 4, sin descanso). <strong>Bono semanal fijo:</strong> se paga completo salvo que haya una falta (FI) o un permiso sin goce (PSGS); las vacaciones y el permiso con goce no afectan el bono. <strong>Horas extras y deducciones:</strong> las horas extras aprobadas se suman; las deducciones (FONACOT, INFONAVIT, crédito empresa) se restan para dar el neto. No se pagan FI, PSGS ni incapacidades (INC, las cubre el IMSS).
         </div>
       </div>
     </>
