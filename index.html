@@ -3564,6 +3564,18 @@ function PrenominaCapture({ presetSucursalId, presetWeekId }) {
     setRejectModal(false);
   }
 
+  function reabrir() {
+    // Regresa una pre-nómina ya enviada/aprobada/cerrada a 'borrador' para que
+    // el gerente pueda terminar la captura y volver a enviarla. Solo Admin/Contab.
+    const newPre = { ...prenomina, estado: 'borrador' };
+    setState({ ...state, prenominas: { ...state.prenominas, [preKey]: newPre } });
+    addAuditLog({
+      modulo: 'prenomina', accion: 'reabrir', entidad: preKey,
+      valorAnterior: { estado: prenomina.estado }, valorNuevo: { estado: 'borrador' }
+    });
+    toast('Pre-nómina reabierta. El gerente puede terminar la captura y reenviarla.');
+  }
+
   if (!sucursal) return (
     <>
       <TopBar title="Pre-nómina" subtitle="Captura semanal" />
@@ -3732,6 +3744,10 @@ function PrenominaCapture({ presetSucursalId, presetWeekId }) {
                 <button className="btn btn-danger" onClick={() => setRejectModal(true)}><Icon name="x" size={14}/>Rechazar</button>
                 <button className="btn btn-success" onClick={aprobar}><Icon name="check" size={14}/>Aprobar y cerrar</button>
               </>
+            )}
+            {/* Reabrir una pre-nómina ya aprobada o cerrada (Admin y Contabilidad) */}
+            {(user.rol === 'contabilidad' || user.rol === 'admin') && (prenomina.estado === 'aprobada' || prenomina.estado === 'cerrada') && (
+              <button className="btn btn-secondary" onClick={reabrir}><Icon name="file" size={14}/>Reabrir para captura</button>
             )}
           </div>
         </div>
