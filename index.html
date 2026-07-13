@@ -3474,10 +3474,16 @@ function PrenominaCapture({ presetSucursalId, presetWeekId }) {
   // Semana: si la pre-nómina viene de la bandeja/lista, respeta SU semana (no la
   // actual). Así contabilidad puede aprobar pre-nóminas de semanas anteriores
   // aunque ya haya cambiado el lunes.
-  const weekId = presetWeekId || getWeekId(getMonday());
+  // El gerente puede saltar a corregir una pre-nómina rechazada de otra semana.
+  const [weekOverride, setWeekOverride] = useState(null);
+  const weekId = weekOverride || presetWeekId || getWeekId(getMonday());
   const _preExistente = state.prenominas[sucursalId + '_' + weekId];
   const monday = (_preExistente && _preExistente.semanaInicio)
     ? parseLocalDate(_preExistente.semanaInicio) : getMonday();
+  // Pre-nómina rechazada pendiente de corregir para esta sucursal (solo gerente).
+  const rechazadaPend = user.rol === 'gerente'
+    ? Object.values(state.prenominas).find(p => p.sucursalId === sucursalId && p.estado === 'rechazada')
+    : null;
 
   const sucursal = (state.sucursales || SEED.sucursales).find(s => s.id === sucursalId);
   const un = SEED.unidades.find(u => u.id === sucursal?.unId);
@@ -3615,11 +3621,29 @@ function PrenominaCapture({ presetSucursalId, presetWeekId }) {
             Esta pre-nómina se pre-llenó con el horario que definiste la semana pasada. Revisa y ajusta lo que haya cambiado en la realidad.
           </div>
         )}
+        {/* Aviso: tienes una pre-nómina rechazada por corregir (gerente) */}
+        {rechazadaPend && weekId !== rechazadaPend.weekId && (
+          <div className="mb-4 p-4 rounded-lg border bg-red-50 flex items-start justify-between gap-3" style={{borderColor:'#F2B8B3'}}>
+            <div>
+              <div className="text-xs uppercase tracking-wider font-medium mb-1" style={{color:'#8C1F1B'}}>Pre-nómina rechazada por corregir</div>
+              <div className="text-sm" style={{color:'#8C1F1B'}}>
+                Contabilidad rechazó tu pre-nómina de la <strong>semana {rechazadaPend.weekId}</strong>
+                {rechazadaPend.semanaInicio && <> ({fmtFechaCorta(parseLocalDate(rechazadaPend.semanaInicio))} – {fmtFechaCorta(parseLocalDate(rechazadaPend.semanaFin))})</>}. Corrígela y vuélvela a enviar.
+              </div>
+            </div>
+            <button className="btn btn-danger" style={{whiteSpace:'nowrap'}} onClick={() => setWeekOverride(rechazadaPend.weekId)}>Corregir esa semana</button>
+          </div>
+        )}
         {/* Banner de motivo de rechazo */}
         {prenomina.estado === 'rechazada' && prenomina.motivoRechazo && (
           <div className="mb-4 p-4 rounded-lg border bg-red-50" style={{borderColor:'#F2B8B3'}}>
-            <div className="text-xs uppercase tracking-wider font-medium mb-1" style={{color:'#8C1F1B'}}>Motivo del rechazo de contabilidad</div>
-            <div className="text-sm">{prenomina.motivoRechazo}</div>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-xs uppercase tracking-wider font-medium mb-1" style={{color:'#8C1F1B'}}>Motivo del rechazo de contabilidad</div>
+                <div className="text-sm">{prenomina.motivoRechazo}</div>
+              </div>
+              {weekOverride && <button className="btn btn-secondary" style={{whiteSpace:'nowrap'}} onClick={() => setWeekOverride(null)}>Ir a la semana en curso</button>}
+            </div>
           </div>
         )}
 
