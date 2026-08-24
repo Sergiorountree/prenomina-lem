@@ -1033,16 +1033,27 @@ function descansosFinDeSemana(horario) {
 /* Recorre todos los horarios de un conjunto de sucursales y junta las alertas
    de descanso en fin de semana, con datos del colaborador y la sucursal. */
 function alertasFinDeSemana(state, sucIds) {
+  // SOLO la semana en curso y la próxima: los horarios de semanas anteriores
+  // quedan guardados como historial pero ya no generan avisos (antes se
+  // acumulaban y el mismo colaborador aparecía repetido una vez por semana).
   const alertas = [];
   const horarios = state.horarios || {};
+  const weekActual = getWeekId(getMonday());
+  const weekProxima = getWeekId(addDays(getMonday(), 7));
+  const vistos = {}; // colab + semana + sucursal -> evita avisos duplicados
   Object.keys(horarios).forEach(key => {
     const h = horarios[key];
     if (!h || !sucIds.includes(h.sucursalId)) return;
+    if (h.weekId !== weekActual && h.weekId !== weekProxima) return;
     descansosFinDeSemana(h).forEach(d => {
       const colab = state.colaboradores.find(c => c.id === d.colaboradorId);
       if (!colab || colab.estatus !== 'activo') return;
+      const dupKey = d.colaboradorId + '_' + h.weekId + '_' + h.sucursalId;
+      if (vistos[dupKey]) return;
+      vistos[dupKey] = true;
       alertas.push({
         colab, sucursalId: h.sucursalId, weekId: h.weekId,
+        esProxima: h.weekId === weekProxima,
         dias: d.dias, nombresDias: d.nombresDias,
       });
     });
@@ -1478,6 +1489,7 @@ function Sidebar({ user, view, setView }) {
     rh: [
       { key: 'dashboard', icon: 'chart',  label: 'Dashboard' },
       { key: 'colaboradores', icon: 'users', label: 'Colaboradores' },
+      { key: 'sucursales', icon: 'home',  label: 'Sucursales' },
       { key: 'cumpleanos', icon: 'cake', label: 'Cumpleaños' },
       { key: 'movimientos',icon: 'moveH', label: 'Movimientos' },
       { key: 'contratos',  icon: 'file', label: 'Contratos' },
@@ -1700,7 +1712,7 @@ function PanelDescansosFinde({ sucIds }) {
         <div className="text-base font-medium">Descansos en fin de semana</div>
         <span className="ml-auto num text-sm font-medium" style={{ color: '#C2410C' }}>{alertas.length} aviso(s)</span>
       </div>
-      <p className="text-sm text-gray-500 mb-3">Colaboradores con descanso programado en viernes, sábado o domingo (días pico) en el horario de la próxima semana.</p>
+      <p className="text-sm text-gray-500 mb-3">Colaboradores con descanso programado en viernes, sábado o domingo (días pico). Solo se muestran la semana en curso y la próxima; las semanas anteriores ya no generan avisos.</p>
       <div className="space-y-3">
         {Object.keys(porSuc).map(sucId => {
           const suc = (state.sucursales || SEED.sucursales).find(s => s.id === sucId);
@@ -1715,6 +1727,10 @@ function PanelDescansosFinde({ sucIds }) {
                 {porSuc[sucId].map((a, i) => (
                   <div key={i} className="text-[13px] text-gray-600">
                     <strong>{a.colab.nombre} {a.colab.apellidoPaterno} {a.colab.apellidoMaterno}</strong> — descansa {a.nombresDias.join(' y ')}
+                    <span className="text-[11px] ml-1.5 px-1.5 py-0.5 rounded"
+                      style={{ background: a.esProxima ? '#FEF3E7' : '#EEF4F1', color: a.esProxima ? '#C2410C' : '#0E5A42' }}>
+                      {a.esProxima ? 'próxima semana' : 'esta semana'}
+                    </span>
                   </div>
                 ))}
               </div>
@@ -4266,8 +4282,12 @@ function countFIInMonth(state, colabId, anio, mes) {
    SUCURSALES — gestión para el Administrador
    ======================================================================== */
 function SucursalesScreen() {
-  const { state, setState, addAuditLog, toast } = useApp();
+  const { user, state, setState, addAuditLog, toast } = useApp();
   const [modal, setModal] = useState(null); // { mode:'nueva'|'editar', sucursal }
+  const [detalleSuc, setDetalleSuc] = useState(null); // sucursal seleccionada para ver colaboradores
+
+  // Solo el administrador puede crear/editar sucursales; RH tiene vista de consulta
+  const puedeEditar = user.rol === 'admin';
 
   const sucursales = state.sucursales || SEED.sucursales;
   // Gerentes y asesores disponibles para asignar
@@ -4313,10 +4333,12 @@ function SucursalesScreen() {
 
   return (
     <>
-      <TopBar title="Sucursales" subtitle={`${sucursales.length} sucursales en ${unidadesOp.length} unidades de negocio`} actions={
-        <button className="btn btn-primary" onClick={() => setModal({ mode: 'nueva', sucursal: null })}>
-          <Icon name="plus" size={14} /> Nueva sucursal
-        </button>
+      <TopBar title="Sucursales" subtitle={`${sucursales.length} sucursales en ${unidadesOp.length} unidades de negocio · haz clic en una sucursal para ver a su gente`} actions={
+        puedeEditar ? (
+          <button className="btn btn-primary" onClick={() => setModal({ mode: 'nueva', sucursal: null })}>
+            <Icon name="plus" size={14} /> Nueva sucursal
+          </button>
+        ) : null
       } />
       <div className="p-8 space-y-6">
         {unidadesOp.map(un => {
@@ -4337,7 +4359,10 @@ function SucursalesScreen() {
                   {sucsUN.map(s => {
                     const ger = gerentes.find(g => g.id === s.gerenteId);
                     return (
-                      <div key={s.id} className="bg-white rounded-xl shadow-card p-4">
+                      <div key={s.id} className="bg-white rounded-xl shadow-card p-4"
+                        onClick={() => setDetalleSuc(s)}
+                        style={{ cursor: 'pointer' }}
+                        title="Ver colaboradores de esta sucursal">
                         <div className="flex items-start justify-between mb-3">
                           <div className="flex items-center gap-2.5">
                             <div style={{ width: 36, height: 36, borderRadius: 8, background: un.color,
@@ -4359,11 +4384,13 @@ function SucursalesScreen() {
                               })()}
                             </div>
                           </div>
-                          <button onClick={() => setModal({ mode: 'editar', sucursal: s })}
-                            className="btn btn-ghost p-1.5 tip">
-                            <Icon name="settings" size={14} />
-                            <span className="tip-body">Editar</span>
-                          </button>
+                          {puedeEditar && (
+                            <button onClick={(e) => { e.stopPropagation(); setModal({ mode: 'editar', sucursal: s }); }}
+                              className="btn btn-ghost p-1.5 tip">
+                              <Icon name="settings" size={14} />
+                              <span className="tip-body">Editar</span>
+                            </button>
+                          )}
                         </div>
                         {s.direccion && <div className="text-xs text-gray-500 mb-2">{s.direccion}</div>}
                         <div className="pt-2" style={{ borderTop: '1px solid var(--border)' }}>
@@ -4414,7 +4441,135 @@ function SucursalesScreen() {
           onSave={guardarSucursal}
         />
       )}
+
+      {detalleSuc && (
+        <SucursalColabsModal
+          sucursal={detalleSuc}
+          onClose={() => setDetalleSuc(null)}
+        />
+      )}
     </>
+  );
+}
+
+/* Modal de consulta: colaboradores dados de alta en una sucursal (RH / Admin).
+   No muestra montos salariales — regla de oro: solo Admin y Contabilidad ven sueldos,
+   y esta vista es de plantilla, no de nómina. */
+function SucursalColabsModal({ sucursal, onClose }) {
+  const { state } = useApp();
+  const [filter, setFilter] = useState('');
+  const [incluirBajas, setIncluirBajas] = useState(false);
+
+  const un = SEED.unidades.find(u => u.id === sucursal.unId);
+  const gerente = getUsuarios(state).find(u => u.id === sucursal.gerenteId);
+
+  let colabs = state.colaboradores.filter(c => c.sucursalId === sucursal.id);
+  const activos = colabs.filter(c => c.estatus === 'activo');
+  colabs = incluirBajas ? colabs.filter(c => c.estatus === 'activo' || c.estatus === 'baja') : activos;
+
+  if (filter) {
+    const f = filter.toLowerCase();
+    colabs = colabs.filter(c =>
+      (c.nombre || '').toLowerCase().includes(f) ||
+      (c.apellidoPaterno || '').toLowerCase().includes(f) ||
+      (c.apellidoMaterno || '').toLowerCase().includes(f)
+    );
+  }
+
+  // Activos primero, luego por antigüedad (más antiguo arriba)
+  colabs = [...colabs].sort((a, b) => {
+    if (a.estatus !== b.estatus) return a.estatus === 'activo' ? -1 : 1;
+    return new Date(a.fechaIngreso || 0) - new Date(b.fechaIngreso || 0);
+  });
+
+  const objetivo = sucursal.plantillaObjetivo || 0;
+  const corta = objetivo > 0 && activos.length < objetivo;
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-card" style={{ maxWidth: 640 }} onClick={e => e.stopPropagation()}>
+        <div className="p-6 pb-4 flex items-start justify-between" style={{ borderBottom: '1px solid var(--border)' }}>
+          <div className="flex items-center gap-3">
+            <div style={{ width: 40, height: 40, borderRadius: 9, background: un?.color || 'var(--lem)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <Icon name="home" size={18} className="text-white" />
+            </div>
+            <div>
+              <h2 className="text-lg font-medium leading-tight">{sucursal.nombre}</h2>
+              <p className="text-sm text-gray-500 mt-0.5">
+                {un?.nombre}{gerente ? ` · Gerente: ${gerente.nombre}` : ' · Sin gerente asignado'}
+              </p>
+              <p className="text-xs mt-0.5" style={{ color: corta ? '#8C1F1B' : 'var(--text-soft)' }}>
+                {activos.length} colaborador(es) activos{objetivo > 0 && ` de ${objetivo} de plantilla objetivo`}
+                {corta && <span> · faltan {objetivo - activos.length}</span>}
+              </p>
+            </div>
+          </div>
+          <button onClick={onClose} className="btn btn-ghost p-1.5"><Icon name="x" size={16} /></button>
+        </div>
+
+        <div className="px-6 pt-4 flex items-center gap-3">
+          <div className="flex-1 relative">
+            <Icon name="search" size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+            <input value={filter} onChange={e => setFilter(e.target.value)} placeholder="Buscar por nombre o apellido..."
+              className="w-full pl-9 pr-3 py-2 rounded-lg border text-sm bg-white" style={{ borderColor: 'var(--border-strong)' }} />
+          </div>
+          <label className="flex items-center gap-2 text-sm text-gray-600 select-none" style={{ cursor: 'pointer' }}>
+            <input type="checkbox" checked={incluirBajas} onChange={e => setIncluirBajas(e.target.checked)} />
+            Incluir bajas
+          </label>
+        </div>
+
+        <div className="p-6 pt-4">
+          <div className="bg-white rounded-xl overflow-hidden" style={{ border: '1px solid var(--border)' }}>
+            <div className="overflow-auto" style={{ maxHeight: '50vh' }}>
+              {colabs.length === 0 ? (
+                <div className="p-6 text-sm text-gray-500 text-center">
+                  {filter ? 'Sin resultados para esa búsqueda.' : 'Esta sucursal no tiene colaboradores dados de alta.'}
+                </div>
+              ) : (
+                <table className="lem-table w-full">
+                  <thead>
+                    <tr>
+                      <th>Colaborador</th>
+                      <th>Puesto</th>
+                      <th>Fecha de alta</th>
+                      <th>Antigüedad</th>
+                      <th>Estatus</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {colabs.map(c => {
+                      const puesto = SEED.puestos.find(p => p.id === c.puestoId);
+                      return (
+                        <tr key={c.id}>
+                          <td>
+                            <div className="flex items-center gap-3">
+                              <div className="avatar" style={{ width: 30, height: 30, background: un?.color || 'var(--lem)', fontSize: 11 }}>
+                                {(c.nombre || '?')[0]}{(c.apellidoPaterno || '')[0] || ''}
+                              </div>
+                              <div className="font-medium">{c.nombre} {c.apellidoPaterno} {c.apellidoMaterno}</div>
+                            </div>
+                          </td>
+                          <td>{puesto?.nombre || '—'}</td>
+                          <td className="text-sm text-gray-700">{c.fechaIngreso ? fmtFecha(c.fechaIngreso) : '—'}</td>
+                          <td className="text-sm text-gray-700">{c.fechaIngreso ? fmtAntiguedad(c.fechaIngreso) : '—'}</td>
+                          <td><EstatusPill estatus={c.estatus} /></td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="px-6 py-4 flex justify-end" style={{ borderTop: '1px solid var(--border)' }}>
+          <button onClick={onClose} className="btn btn-secondary">Cerrar</button>
+        </div>
+      </div>
+    </div>
   );
 }
 
