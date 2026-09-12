@@ -526,16 +526,29 @@ const ROLES = {
    ======================================================================== */
 const STORAGE_KEY = 'lem_app_v16';
 
+/* Auditoría de seguridad 12-sep-2026 (S01/S02): en el navegador NO se guardan contraseñas,
+   sueldos, bonos, deducciones ni montos de movimientos. Firestore es la fuente: al entrar se
+   recargan (fsCargarColaboradores / fsCargarMovimientos). Lo que aquí se guarda es solo caché. */
+function sinDatosSensibles(state) {
+  if (!state || typeof state !== 'object') return state;
+  const s = { ...state };
+  if (Array.isArray(s.usuarios)) s.usuarios = s.usuarios.map(u => { if (!u) return u; const { password, ...resto } = u; return resto; });
+  if (Array.isArray(s.colaboradores)) s.colaboradores = s.colaboradores.map(c => { if (!c) return c; const { sueldoDiario, bonoTransporte, deducciones, ...resto } = c; return resto; });
+  if (Array.isArray(s.movimientos)) s.movimientos = s.movimientos.map(m => { if (!m) return m; const { priv, ...resto } = m; return resto; });
+  return s;
+}
+
 function loadState() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw);
+    if (raw) return sinDatosSensibles(JSON.parse(raw));
   } catch (e) {}
   return null;
 }
 
 function saveState(state) {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) {}
+  if (window.__lemCerrando) return;   // cerrando sesión: no volver a escribir nada
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(sinDatosSensibles(state))); } catch (e) {}
 }
 
 /* Migraciones idempotentes sobre el estado ya guardado: inyectan datos
@@ -6768,7 +6781,8 @@ function UsuariosScreen() {
   const rolLabel = { admin: 'Administrador', rh: 'Recursos Humanos', contabilidad: 'Contabilidad', asesor: 'Asesor', gerente: 'Gerente de Sucursal' };
   const rolBadge = { admin: 'badge-aprobada', rh: 'badge-revision', contabilidad: 'badge-revision', asesor: 'badge-borrador', gerente: 'badge-enviada' };
 
-  function guardar(data) {
+  function guardar(dataEntrada) {
+    const { password, ...data } = dataEntrada || {};   // Auditoría 12-sep-2026 (S02): nunca se guarda una contraseña
     let nuevos;
     if (modal.mode === 'nuevo') {
       // Validar correo único
@@ -6850,7 +6864,6 @@ function UsuariosScreen() {
 function UsuarioModal({ mode, usuario, colaboradores, onClose, onSave }) {
   const [nombre, setNombre] = useState(usuario?.nombre || '');
   const [email, setEmail] = useState(usuario?.email || '');
-  const [password, setPassword] = useState(usuario?.password || '');
   const [rol, setRol] = useState(usuario?.rol || 'gerente');
   const [error, setError] = useState('');
 
@@ -6861,8 +6874,7 @@ function UsuarioModal({ mode, usuario, colaboradores, onClose, onSave }) {
     setError('');
     if (!nombre.trim()) { setError('El nombre es obligatorio.'); return; }
     if (!email.trim() || !email.includes('@')) { setError('Captura un correo válido.'); return; }
-    if (!password.trim()) { setError('Define una contraseña.'); return; }
-    onSave({ nombre: nombre.trim(), email: email.trim(), password: password.trim(), rol });
+    onSave({ nombre: nombre.trim(), email: email.trim(), rol });
   }
 
   // Autocompletar nombre/correo desde un colaborador existente
@@ -6902,8 +6914,7 @@ function UsuarioModal({ mode, usuario, colaboradores, onClose, onSave }) {
           </div>
           <div>
             <label className="text-[11px] uppercase tracking-wider text-gray-500 font-medium mb-1 block">Contraseña</label>
-            <input value={password} onChange={e => setPassword(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border text-sm" style={{ borderColor: 'var(--border-strong)' }} placeholder="Contraseña de acceso" />
-            <p className="text-[11px] text-gray-400 mt-1">En el sistema final (Firebase) cada quien podrá cambiar su contraseña y recuperarla por correo.</p>
+            <p className="text-[12px] text-gray-600">Aquí no se captura. El acceso real se crea en Firebase Authentication con este mismo correo, y cada persona la cambia o recupera con «Olvidé mi contraseña» en la pantalla de entrada.</p>
           </div>
           <div>
             <label className="text-[11px] uppercase tracking-wider text-gray-500 font-medium mb-1 block">Rol</label>
@@ -7289,7 +7300,8 @@ function App() {
       await esperarAuthFirebase();     // espera a que Firebase reconozca la sesión
       if (cancelado) return;
       const fb = firebase.auth().currentUser;
-      if (!fb) return;
+      // Auditoría 12-sep-2026 (S01): sin sesión de Firebase, o con otra cuenta, no se restaura el perfil.
+      if (!fb || (fb.email || '').toLowerCase() !== (user.email || '').toLowerCase()) { logout(); return; }
       try {
         const verSueldos = user.rol === 'admin' || user.rol === 'contabilidad';
         const email = (fb.email || '').toLowerCase();
@@ -7378,7 +7390,15 @@ function App() {
   }, [state.movimientos, user]);
 
   function login(u) { setUser(u); setView('dashboard'); show(`Bienvenido, ${u.nombre.split(' ')[0]}.`); }
-  function logout() { setUser(null); }
+  function logout() {
+    // Auditoría 12-sep-2026 (S01): cerrar Firebase, borrar lo guardado en el navegador y
+    // recargar para que no quede nada en memoria (ni datos, ni cachés de sincronización).
+    window.__lemCerrando = true;
+    try { localStorage.removeItem(STORAGE_KEY); } catch (e) {}
+    try { sessionStorage.removeItem('lem_user'); } catch (e) {}
+    const fin = () => { try { location.replace(location.pathname); } catch (e) { location.reload(); } };
+    if (typeof firebase !== 'undefined' && firebase.auth) firebase.auth().signOut().then(fin, fin); else fin();
+  }
 
   function addAuditLog({ modulo, accion, entidad, valorAnterior, valorNuevo }) {
     setState(prev => ({
