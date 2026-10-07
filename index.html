@@ -1502,6 +1502,7 @@ function Sidebar({ user, view, setView }) {
       { key: 'bajas',      icon: 'logout',   label: 'Bajas' },
       { key: 'reportes',   icon: 'file',     label: 'Reportes' },
       { key: 'bonos',      icon: 'gift',     label: 'Bonos' },
+      { key: 'avisos',     icon: 'bell',     label: 'Avisos' },
       { key: 'usuarios',   icon: 'settings',  label: 'Usuarios y accesos' },
       { key: 'auditoria',  icon: 'clipboard',label: 'Auditoría' },
     ],
@@ -1548,6 +1549,9 @@ function Sidebar({ user, view, setView }) {
     ],
   };
   const items = navByRole[user.rol] || [];
+  const { state: _st } = useApp();
+  const _miEmail = (user.email || '').toLowerCase();
+  const avisosSinLeer = ((_st && _st.notificaciones) || []).filter(n => n.paraEmail === _miEmail && !n.leida).length;
 
   return (
     <aside className="w-64 shrink-0 border-r flex flex-col" style={{ borderColor: 'var(--border)', background: '#FCFBF7' }}>
@@ -1565,6 +1569,9 @@ function Sidebar({ user, view, setView }) {
           <button key={item.key} onClick={() => setView(item.key)} className={`nav-item w-full text-left ${view === item.key ? 'active' : ''}`}>
             <Icon name={item.icon} size={16} />
             <span>{item.label}</span>
+            {item.key === 'avisos' && avisosSinLeer > 0 && (
+              <span className="num" style={{ marginLeft: 'auto', background: '#8C1F1B', color: 'white', borderRadius: 999, fontSize: 11, padding: '1px 7px' }}>{avisosSinLeer}</span>
+            )}
           </button>
         ))}
       </nav>
@@ -2908,8 +2915,6 @@ function AltaColaboradorModal({ onClose }) {
   const todasSuc = (state.sucursales || SEED.sucursales).filter(s => s.unId !== 'corp');
   // Solo Admin y Contabilidad ven y capturan montos salariales
   const verSueldos = user.rol === 'admin' || user.rol === 'contabilidad';
-  // RH captura sueldo/bono SOLO al dar de alta (no los ve ni los edita después; el servidor solo le permite crearlos).
-  const capturaSueldo = verSueldos || user.rol === 'rh';
 
   const [form, setForm] = useState({
     curp: '', rfc: '', nss: '',
@@ -2948,6 +2953,9 @@ function AltaColaboradorModal({ onClose }) {
   const esRecontratacion = coincidencia && coincidencia.estatus === 'baja';
   // ¿La coincidencia es alguien activo? -> bloqueo total (duplicado real)
   const esDuplicadoActivo = coincidencia && coincidencia.estatus === 'activo';
+  // RH captura sueldo/bono SOLO en alta nueva (no los ve ni los edita después; el servidor solo le permite crearlos).
+  // En recontratación RH no toca el sueldo: se queda el que tenía; si cambia, lo actualiza Contabilidad.
+  const capturaSueldo = verSueldos || (user.rol === 'rh' && !esRecontratacion);
 
   function guardar() {
     setError('');
@@ -2964,25 +2972,44 @@ function AltaColaboradorModal({ onClose }) {
     }
     // Recontratación: requiere ser admin y marcar autorización
     if (esRecontratacion) {
-      if (user.rol !== 'admin') {
-        setError('Esta persona fue dada de baja anteriormente. Solo el Administrador puede autorizar una recontratación.');
+      if (user.rol !== 'admin' && user.rol !== 'rh') {
+        setError('Esta persona fue dada de baja anteriormente. Solo el Administrador o RH pueden registrar una recontratación.');
         return;
       }
       if (!autorizaRecontratacion) {
-        setError('Marca la casilla de autorización de recontratación para continuar.');
+        setError('Marca la casilla de confirmación de recontratación para continuar.');
         return;
       }
       // Reactivar al colaborador existente
       const nuevos = state.colaboradores.map(c => c.id === coincidencia.id
-        ? { ...c, estatus: 'activo', sucursalId: form.sucursalId, puestoId: form.puestoId,
-            fechaIngreso: form.fechaIngreso, sueldoDiario: parseFloat(form.sueldoDiario) || c.sueldoDiario,
-            bonoTransporte: parseFloat(form.bonoTransporte) || 0,
-            recontratado: true, fechaRecontratacion: new Date().toISOString(), recontratadoPor: user.id }
+        ? Object.assign({ ...c, estatus: 'activo', sucursalId: form.sucursalId, puestoId: form.puestoId,
+            fechaIngreso: form.fechaIngreso,
+            recontratado: true, fechaRecontratacion: new Date().toISOString(), recontratadoPor: user.id },
+            verSueldos ? { sueldoDiario: parseFloat(form.sueldoDiario) || c.sueldoDiario,
+                           bonoTransporte: parseFloat(form.bonoTransporte) || 0 } : {})
         : c);
-      setState({ ...state, colaboradores: nuevos });
+      // Si RH recontrata: aviso dentro de la app a cada Administrador (Sergio y Oscar). Sin montos de sueldo.
+      let avisos = [];
+      if (user.rol === 'rh') {
+        const sucN = (state.sucursales || SEED.sucursales).find(s => s.id === form.sucursalId)?.nombre || '';
+        const pstN = (SEED.puestos.find(p => p.id === form.puestoId) || {}).nombre || '';
+        const admins = ((state.usuarios && state.usuarios.length) ? state.usuarios : SEED.usuarios).filter(u => u.rol === 'admin' && u.email);
+        const ahora = new Date().toISOString();
+        const nombreColab = [coincidencia.nombre, coincidencia.apellidoPaterno, coincidencia.apellidoMaterno].filter(Boolean).join(' ');
+        avisos = admins.map((a, i) => ({
+          id: 'ntf_' + Date.now().toString(36) + i + Math.random().toString(36).slice(2, 6),
+          paraEmail: a.email.toLowerCase(), tipo: 'recontratacion', leida: false, fecha: ahora,
+          deEmail: (user.email || '').toLowerCase(), colaboradorId: coincidencia.id,
+          titulo: 'Recontratación registrada por RH',
+          mensaje: nombreColab + ' fue recontratado(a) en ' + (sucN || 'sucursal sin nombre') + (pstN ? ' como ' + pstN : '') +
+            ', con fecha de ingreso ' + fmtFecha(form.fechaIngreso) + '. Lo registró RH (' + (user.email || user.nombre) + '). ' +
+            'El sueldo quedó como estaba antes de la baja; si cambia, lo actualiza Contabilidad.',
+        }));
+      }
+      setState({ ...state, colaboradores: nuevos, notificaciones: [...(state.notificaciones || []), ...avisos] });
       addAuditLog({ modulo: 'colaboradores', accion: 'recontratar', entidad: coincidencia.id,
         valorAnterior: { estatus: 'baja' }, valorNuevo: { estatus: 'activo', autorizadoPor: user.nombre } });
-      toast(`${coincidencia.nombre} ${coincidencia.apellidoPaterno} fue recontratado(a).`);
+      toast(`${coincidencia.nombre} ${coincidencia.apellidoPaterno} fue recontratado(a).` + (avisos.length ? ' Se avisó a Dirección.' : ''));
       onClose();
       return;
     }
@@ -3092,16 +3119,16 @@ function AltaColaboradorModal({ onClose }) {
                 <strong>{coincidencia.nombre} {coincidencia.apellidoPaterno} {coincidencia.apellidoMaterno}</strong> ya trabajó en la empresa y fue dado de baja. 
                 {coincidencia.fechaBajaActual && <> Fecha de baja: <span className="num">{fmtFecha(coincidencia.fechaBajaActual)}</span>.</>}
               </p>
-              {user.rol === 'admin' ? (
+              {(user.rol === 'admin' || user.rol === 'rh') ? (
                 <label className="flex items-center gap-2.5 cursor-pointer mt-2 p-2 rounded" style={{ background: 'white' }}>
                   <input type="checkbox" checked={autorizaRecontratacion}
                     onChange={e => { setAutorizaRecontratacion(e.target.checked); setError(''); }}
                     style={{ width: 16, height: 16 }} />
-                  <span className="text-sm font-medium">Autorizo la recontratación de esta persona</span>
+                  <span className="text-sm font-medium">{user.rol === 'rh' ? 'Confirmo la recontratación de esta persona (se avisará a Dirección)' : 'Autorizo la recontratación de esta persona'}</span>
                 </label>
               ) : (
                 <p className="text-sm font-medium mt-1" style={{ color: '#8C1F1B' }}>
-                  Solo el Administrador puede autorizar recontrataciones. Solicita su autorización.
+                  Solo el Administrador o RH pueden registrar recontrataciones.
                 </p>
               )}
             </div>
@@ -3193,7 +3220,10 @@ function AltaColaboradorModal({ onClose }) {
           {!capturaSueldo && (
             <p className="text-[11px] text-gray-400 -mt-1">El sueldo y el bono de transporte los captura el Administrador o Contabilidad.</p>
           )}
-          {user.rol === 'rh' && (
+          {user.rol === 'rh' && esRecontratacion && (
+            <p className="text-[11px] -mt-1" style={{color:'#92400E'}}>En una recontratación el sueldo se queda como estaba antes de la baja. Si cambia, lo actualiza Contabilidad.</p>
+          )}
+          {user.rol === 'rh' && !esRecontratacion && (
             <p className="text-[11px] -mt-1" style={{color:'#92400E'}}>Revisa bien el sueldo: una vez guardado, RH ya no podrá verlo ni cambiarlo. Cualquier corrección la hace Contabilidad.</p>
           )}
 
@@ -4176,6 +4206,45 @@ function PrenominasList({ inbox = false }) {
 /* ========================================================================
    GENERIC PLACEHOLDERS for less-critical screens
    ======================================================================== */
+/* Avisos dentro de la app (colección 'notificaciones'). Cada aviso va a un correo (paraEmail).
+   Hoy los genera la recontratación hecha por RH (avisa a cada Administrador). */
+function AvisosScreen() {
+  const { user, state, setState } = useApp();
+  const miEmail = (user.email || '').toLowerCase();
+  const mios = (state.notificaciones || []).filter(n => n.paraEmail === miEmail)
+    .slice().sort((a, b) => new Date(b.fecha || 0) - new Date(a.fecha || 0));
+  const sinLeer = mios.filter(n => !n.leida).length;
+  function marcar(ids) {
+    const set = new Set(ids);
+    const ahora = new Date().toISOString();
+    setState({ ...state, notificaciones: (state.notificaciones || []).map(n =>
+      set.has(n.id) ? { ...n, leida: true, fechaLeida: ahora } : n) });
+  }
+  return (
+    <div>
+      <TopBar title="Avisos" subtitle={sinLeer ? `${sinLeer} sin leer` : 'Todo leído'} actions={
+        sinLeer > 0 ? <button className="btn btn-secondary" onClick={() => marcar(mios.filter(n => !n.leida).map(n => n.id))}>Marcar todos como leídos</button> : null
+      } />
+      <div className="p-6 space-y-3">
+        {mios.length === 0 && <p className="text-sm text-gray-500">No tienes avisos.</p>}
+        {mios.map(n => (
+          <div key={n.id} className="bg-white rounded-xl shadow-card p-4"
+            style={{ borderLeft: '3px solid ' + (n.leida ? 'var(--border)' : '#8C1F1B') }}>
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="text-sm font-medium">{n.titulo || 'Aviso'}{!n.leida && <span className="badge badge-rechazada" style={{ marginLeft: 8 }}>Nuevo</span>}</div>
+                <p className="text-sm text-gray-700 mt-1">{n.mensaje}</p>
+                <div className="text-xs text-gray-500 mt-1">{n.fecha ? new Date(n.fecha).toLocaleString('es-MX') : ''}</div>
+              </div>
+              {!n.leida && <button className="btn btn-secondary" onClick={() => marcar([n.id])}>Marcar como leído</button>}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ComingSoon({ title, subtitle, items }) {
   return (
     <>
@@ -7445,6 +7514,7 @@ function App() {
   else if (view === 'colaboradores') body = <ColaboradoresList />;
   else if (view === 'sucursales') body = <SucursalesScreen />;
   else if (view === 'horario') body = <HorarioScreen />;
+  else if (view === 'avisos') body = <AvisosScreen />;
   else if (view === 'capturar' || (view === 'prenominas' && user.rol === 'gerente')) body = <PrenominaCapture presetSucursalId={capturePreset} />;
   else if (view === 'prenominas') body = <PrenominasList />;
   else if (view === 'inbox') body = <PrenominasList inbox />;
