@@ -868,14 +868,20 @@ function getMonday(d = new Date()) {
   date.setHours(0,0,0,0);
   return date;
 }
+/* Fechas de solo día ('YYYY-MM-DD') se leen como fecha LOCAL, no UTC.
+   Antes new Date('2026-10-07') = 00:00 UTC = 6-oct 18:00 en Chihuahua -> se mostraba un día antes. */
+function aFecha(d) {
+  if (typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d.trim())) return parseLocalDate(d.trim());
+  return new Date(d);
+}
 function fmtFecha(d) {
-  return new Date(d).toLocaleDateString('es-MX', { day:'2-digit', month:'short', year:'numeric' });
+  return aFecha(d).toLocaleDateString('es-MX', { day:'2-digit', month:'short', year:'numeric' });
 }
 function fmtFechaCorta(d) {
-  return new Date(d).toLocaleDateString('es-MX', { day:'2-digit', month:'short' });
+  return aFecha(d).toLocaleDateString('es-MX', { day:'2-digit', month:'short' });
 }
 function calcAntiguedad(fechaIngreso) {
-  const ini = new Date(fechaIngreso);
+  const ini = aFecha(fechaIngreso);
   const hoy = new Date();
   let meses = (hoy.getFullYear() - ini.getFullYear()) * 12 + (hoy.getMonth() - ini.getMonth());
   if (hoy.getDate() < ini.getDate()) meses--;
@@ -910,7 +916,7 @@ function diasVacacionesLFT(aniosCumplidos) {
 /* Calcula el periodo de vacaciones vigente de un colaborador.
    El "año de vacaciones" va de aniversario a aniversario, no por calendario. */
 function periodoVacaciones(fechaIngreso) {
-  const ini = new Date(fechaIngreso);
+  const ini = aFecha(fechaIngreso);
   const hoy = new Date();
   const a = calcAntiguedad(fechaIngreso);
   const aniosCumplidos = a.anios;
@@ -938,7 +944,7 @@ function diasTomados(state, colabId, periodo) {
   (state.vacaciones || []).forEach(v => {
     if (v.colaboradorId !== colabId) return;
     if (v.estado !== 'aprobada') return;
-    const ini = new Date(v.fechaInicio);
+    const ini = aFecha(v.fechaInicio);
     // Cuenta si la solicitud cae dentro del periodo vigente (desde último aniversario)
     if (ini >= periodo.ultimoAniv && ini < periodo.proxAniv) {
       total += v.diasNaturales || 0;
@@ -1002,7 +1008,7 @@ function diasParaVencer(fechaFin) {
 function contratoVigente(state, colabId) {
   const lista = (state.contratos || []).filter(c => c.colaboradorId === colabId);
   if (!lista.length) return null;
-  return lista.slice().sort((a,b) => new Date(b.fechaInicio) - new Date(a.fechaInicio))[0];
+  return lista.slice().sort((a,b) => aFecha(b.fechaInicio) - aFecha(a.fechaInicio))[0];
 }
 
 /* Estado de alerta de un contrato según días para vencer. */
@@ -1167,7 +1173,7 @@ function bajasEnRango(state, sucIds, desde, hasta) {
     if (b.estado !== 'aprobada') return false;
     const colab = state.colaboradores.find(c => c.id === b.colaboradorId);
     if (!colab || !sucIds.includes(colab.sucursalId)) return false;
-    const f = new Date(b.fechaBaja);
+    const f = aFecha(b.fechaBaja);
     return f >= desde && f <= hasta;
   }).length;
 }
@@ -1234,8 +1240,8 @@ function diasSinPlantilla(state, sucursal) {
   });
   if (bajasSuc.length === 0) return 0;
   const ultima = bajasSuc.reduce((max, b) =>
-    new Date(b.fechaBaja) > new Date(max.fechaBaja) ? b : max);
-  const dias = Math.floor((new Date() - new Date(ultima.fechaBaja)) / 86400000);
+    aFecha(b.fechaBaja) > aFecha(max.fechaBaja) ? b : max);
+  const dias = Math.floor((new Date() - aFecha(ultima.fechaBaja)) / 86400000);
   return Math.max(0, dias);
 }
 
@@ -1290,7 +1296,7 @@ function getWeekId(monday) {
 function addDays(d, n) {
   const r = new Date(d); r.setDate(r.getDate() + n); return r;
 }
-function dateKey(d) { return new Date(d).toISOString().slice(0,10); }
+function dateKey(d) { const x = aFecha(d); return x.getFullYear() + '-' + String(x.getMonth()+1).padStart(2,'0') + '-' + String(x.getDate()).padStart(2,'0'); }
 function parseLocalDate(s) { const p = String(s).slice(0,10).split('-').map(Number); return new Date(p[0], (p[1]||1)-1, p[2]||1); }
 
 /* ========================================================================
@@ -1503,6 +1509,7 @@ function Sidebar({ user, view, setView }) {
       { key: 'dashboard', icon: 'chart',  label: 'Dashboard' },
       { key: 'colaboradores', icon: 'users', label: 'Colaboradores' },
       { key: 'sucursales', icon: 'home',  label: 'Sucursales' },
+      { key: 'horario',    icon: 'calendar', label: 'Horarios' },
       { key: 'cumpleanos', icon: 'cake', label: 'Cumpleaños' },
       { key: 'movimientos',icon: 'moveH', label: 'Movimientos' },
       { key: 'contratos',  icon: 'file', label: 'Contratos' },
@@ -1941,7 +1948,7 @@ function DashboardRH() {
   const cumple = useMemo(() => {
     const hoy = new Date();
     const mes = hoy.getMonth();
-    return state.colaboradores.filter(c => new Date(c.fechaNacimiento).getMonth() === mes && c.estatus === 'activo');
+    return state.colaboradores.filter(c => aFecha(c.fechaNacimiento).getMonth() === mes && c.estatus === 'activo');
   }, [state.colaboradores]);
   const bajasMes = (state.bajas || []).filter(b => {
     const f = new Date(b.fechaSolicitud || Date.now());
@@ -2892,7 +2899,7 @@ function exportarColaboradores(state, user) {
   const ws = XLSX.utils.json_to_sheet(filas);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Colaboradores');
-  const hoy = new Date().toISOString().slice(0, 10);
+  const hoy = dateKey(new Date());
   XLSX.writeFile(wb, `colaboradores_LEM_${hoy}.xlsx`);
 }
 
@@ -2901,6 +2908,8 @@ function AltaColaboradorModal({ onClose }) {
   const todasSuc = (state.sucursales || SEED.sucursales).filter(s => s.unId !== 'corp');
   // Solo Admin y Contabilidad ven y capturan montos salariales
   const verSueldos = user.rol === 'admin' || user.rol === 'contabilidad';
+  // RH captura sueldo/bono SOLO al dar de alta (no los ve ni los edita después; el servidor solo le permite crearlos).
+  const capturaSueldo = verSueldos || user.rol === 'rh';
 
   const [form, setForm] = useState({
     curp: '', rfc: '', nss: '',
@@ -3001,6 +3010,10 @@ function AltaColaboradorModal({ onClose }) {
       statusIMSS: 'pendiente',
       estatus: 'activo',
     };
+    // RH: el sueldo NO se queda en la app ni en la ficha pública; se escribe una sola vez en la compensación privada.
+    const compRH = !verSueldos && user.rol === 'rh'
+      ? { sueldoDiario: nuevo.sueldoDiario, bonoTransporte: nuevo.bonoTransporte } : null;
+    if (!verSueldos) { delete nuevo.sueldoDiario; delete nuevo.bonoTransporte; }
     // Si RH marcó registrar contrato inicial, lo creamos junto
     const nuevosContratos = [...(state.contratos || [])];
     if (form.registrarContrato && form.fechaIngreso) {
@@ -3019,6 +3032,10 @@ function AltaColaboradorModal({ onClose }) {
     setState({ ...state, colaboradores: [...state.colaboradores, nuevo], contratos: nuevosContratos });
     addAuditLog({ modulo: 'colaboradores', accion: 'alta', entidad: nuevo.id,
       valorAnterior: null, valorNuevo: { nombre: nuevo.nombre + ' ' + nuevo.apellidoPaterno } });
+    if (compRH && (compRH.sueldoDiario > 0 || compRH.bonoTransporte > 0) && typeof db !== 'undefined' && db) {
+      db.collection('colaboradores').doc(nuevo.id).collection('privado').doc('compensacion').set(compRH)
+        .catch(e => { console.error('Sueldo alta RH:', e); toast('El colaborador se dio de alta, pero el sueldo no se guardó. Pide a Contabilidad que lo capture.'); });
+    }
     toast('Colaborador dado de alta.');
     onClose();
   }
@@ -3150,13 +3167,13 @@ function AltaColaboradorModal({ onClose }) {
               </select>
             </div>
           </div>
-          <div className={verSueldos ? "grid grid-cols-3 gap-3" : "grid grid-cols-1 gap-3"}>
+          <div className={capturaSueldo ? "grid grid-cols-3 gap-3" : "grid grid-cols-1 gap-3"}>
             <div>
               <label className="text-[11px] uppercase tracking-wider text-gray-500 font-medium mb-1 block">Fecha de ingreso</label>
               <input type="date" value={form.fechaIngreso} onChange={e => set('fechaIngreso', e.target.value)}
                 className="w-full px-3 py-2.5 rounded-lg border text-sm bg-white num" style={{ borderColor: 'var(--border-strong)' }} />
             </div>
-            {verSueldos && (
+            {capturaSueldo && (
               <div>
                 <label className="text-[11px] uppercase tracking-wider text-gray-500 font-medium mb-1 block">Sueldo diario</label>
                 <input type="number" value={form.sueldoDiario} onChange={e => set('sueldoDiario', e.target.value)}
@@ -3164,7 +3181,7 @@ function AltaColaboradorModal({ onClose }) {
                   placeholder="$" />
               </div>
             )}
-            {verSueldos && (
+            {capturaSueldo && (
               <div>
                 <label className="text-[11px] uppercase tracking-wider text-gray-500 font-medium mb-1 block">Bono transporte</label>
                 <input type="number" value={form.bonoTransporte} onChange={e => set('bonoTransporte', e.target.value)}
@@ -3173,8 +3190,11 @@ function AltaColaboradorModal({ onClose }) {
               </div>
             )}
           </div>
-          {!verSueldos && (
+          {!capturaSueldo && (
             <p className="text-[11px] text-gray-400 -mt-1">El sueldo y el bono de transporte los captura el Administrador o Contabilidad.</p>
+          )}
+          {user.rol === 'rh' && (
+            <p className="text-[11px] -mt-1" style={{color:'#92400E'}}>Revisa bien el sueldo: una vez guardado, RH ya no podrá verlo ni cambiarlo. Cualquier corrección la hace Contabilidad.</p>
           )}
 
           {/* Contrato inicial — solo en alta nueva, no en recontratación */}
@@ -3249,7 +3269,7 @@ function ColaboradorFicha({ colab, puedeVerSueldo, onClose }) {
   const un = SEED.unidades.find(u => u.id === suc?.unId);
   const puesto = SEED.puestos.find(p => p.id === colab.puestoId);
   const gerente = getUsuarios(state).find(u => u.id === colab.gerenteId);
-  const edad = new Date().getFullYear() - new Date(colab.fechaNacimiento).getFullYear();
+  const edad = new Date().getFullYear() - aFecha(colab.fechaNacimiento).getFullYear();
   // Solo Admin y Contabilidad ven y editan el estatus ante el IMSS
   const verIMSS = user.rol === 'admin' || user.rol === 'contabilidad';
 
@@ -4176,8 +4196,8 @@ function ComingSoon({ title, subtitle, items }) {
 function CumpleanosScreen() {
   const { state } = useApp();
   const [mes, setMes] = useState(new Date().getMonth());
-  const cumple = state.colaboradores.filter(c => new Date(c.fechaNacimiento).getMonth() === mes && c.estatus === 'activo')
-    .sort((a,b) => new Date(a.fechaNacimiento).getDate() - new Date(b.fechaNacimiento).getDate());
+  const cumple = state.colaboradores.filter(c => aFecha(c.fechaNacimiento).getMonth() === mes && c.estatus === 'activo')
+    .sort((a,b) => aFecha(a.fechaNacimiento).getDate() - aFecha(b.fechaNacimiento).getDate());
   const meses = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
 
   return (
@@ -4196,10 +4216,10 @@ function CumpleanosScreen() {
               {cumple.map(c => {
                 const suc = (state.sucursales || SEED.sucursales).find(s => s.id === c.sucursalId);
                 const un = SEED.unidades.find(u => u.id === suc?.unId);
-                const edad = new Date().getFullYear() - new Date(c.fechaNacimiento).getFullYear();
+                const edad = new Date().getFullYear() - aFecha(c.fechaNacimiento).getFullYear();
                 return (
                   <tr key={c.id}>
-                    <td className="num font-medium">{new Date(c.fechaNacimiento).getDate()}</td>
+                    <td className="num font-medium">{aFecha(c.fechaNacimiento).getDate()}</td>
                     <td>
                       <div className="flex items-center gap-2">
                         <div className="avatar" style={{width:28,height:28,background:un?.color, fontSize:11}}>{c.nombre[0]}{c.apellidoPaterno[0]}</div>
@@ -4492,7 +4512,7 @@ function SucursalColabsModal({ sucursal, onClose }) {
   // Activos primero, luego por antigüedad (más antiguo arriba)
   colabs = [...colabs].sort((a, b) => {
     if (a.estatus !== b.estatus) return a.estatus === 'activo' ? -1 : 1;
-    return new Date(a.fechaIngreso || 0) - new Date(b.fechaIngreso || 0);
+    return aFecha(a.fechaIngreso || 0) - aFecha(b.fechaIngreso || 0);
   });
 
   const objetivo = sucursal.plantillaObjetivo || 0;
@@ -7186,7 +7206,7 @@ function ContratoHistorialModal({ colabId, onClose, onNuevo, onEliminar }) {
   const { state } = useApp();
   const colab = state.colaboradores.find(c => c.id === colabId);
   const lista = (state.contratos || []).filter(k => k.colaboradorId === colabId)
-    .sort((a,b) => new Date(a.fechaInicio) - new Date(b.fechaInicio));
+    .sort((a,b) => aFecha(a.fechaInicio) - aFecha(b.fechaInicio));
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
